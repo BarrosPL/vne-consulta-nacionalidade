@@ -174,25 +174,59 @@ async function solveWithCapSolver(pageUrl, sitekey) {
 
 // ─── 2Captcha ─────────────────────────────────────────────────────────────────
 
-async function solveWith2Captcha(pageUrl, sitekey, timeoutMs = 180000) {
+async function post2Captcha(endpoint, payload, config, attemptLabel = "") {
+  const maxRateLimitRetries = 3;
+  const baseDelay = Number(config.captcha_rate_limit_base_ms) || 15000;
+
+  for (let attempt = 1; attempt <= maxRateLimitRetries + 1; attempt++) {
+    const response = await fetch(`https://api.2captcha.com/${endpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    if (response.status !== 429) {
+      if (!response.ok) {
+        throw new Error(`2Captcha HTTP ${response.status} em ${endpoint}`);
+      }
+      return response.json();
+    }
+
+    if (attempt > maxRateLimitRetries) {
+      throw new Error(`2Captcha HTTP 429 persistente em ${endpoint}`);
+    }
+    const retryAfterSeconds = Number(response.headers.get("retry-after"));
+    const delay = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+      ? retryAfterSeconds * 1000
+      : Math.min(baseDelay * (2 ** (attempt - 1)), 60000);
+    console.warn(
+      `  [2Captcha] ${attemptLabel} — limite HTTP 429; ` +
+      `aguardando ${Math.ceil(delay / 1000)}s antes de continuar.`
+    );
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+  throw new Error(`2Captcha sem resposta em ${endpoint}`);
+}
+
+async function solveWith2Captcha(pageUrl, sitekey, config, captchaAttempt, maxCaptchaAttempts) {
   if (!TWOCAPTCHA_API_KEY) throw new Error("TWOCAPTCHA_API_KEY não definida no .env");
 
+  const timeoutMs = Number(config.captcha_solver_timeout_ms) || 180000;
+  const pollIntervalMs = Math.max(Number(config.captcha_poll_interval_ms) || 5000, 5000);
+  const attemptStartedAt = Date.now();
+  const attemptLabel = `Tentativa ${captchaAttempt}/${maxCaptchaAttempts}`;
+
   console.log("  [2Captcha] Criando tarefa...");
-  const createRes = await fetch("https://api.2captcha.com/createTask", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      clientKey: TWOCAPTCHA_API_KEY,
-      task: {
-        type: "HCaptchaTaskProxyless",
-        websiteURL: pageUrl,
-        websiteKey: sitekey,
-        isInvisible: false,
-        enterprisePayload: {}
-      }
-    })
-  });
-  const createData = await createRes.json();
+  const createData = await post2Captcha("createTask", {
+    clientKey: TWOCAPTCHA_API_KEY,
+    task: {
+      type: "HCaptchaTaskProxyless",
+      websiteURL: pageUrl,
+      websiteKey: sitekey,
+      isInvisible: false,
+      enterprisePayload: {}
+    }
+  }, config, attemptLabel);
 
   if (createData.errorId !== 0) {
     throw new Error(`2Captcha createTask erro: ${createData.errorCode} - ${createData.errorDescription}`);
@@ -201,29 +235,27 @@ async function solveWith2Captcha(pageUrl, sitekey, timeoutMs = 180000) {
   const taskId = createData.taskId;
   console.log(`  [2Captcha] Tarefa criada: ${taskId}`);
 
-  await new Promise((r) => setTimeout(r, 8000));
+  await new Promise((r) => setTimeout(r, pollIntervalMs));
 
-  const startTime = Date.now();
   const TIMEOUT_MS = timeoutMs;
   let attempt = 0;
 
-  while (Date.now() - startTime < TIMEOUT_MS) {
+  while (Date.now() - attemptStartedAt < TIMEOUT_MS) {
     attempt++;
-    const elapsed = Date.now() - startTime;
-    const interval = elapsed < 30_000 ? 3000 : 5000;
+    const elapsed = Date.now() - attemptStartedAt;
 
-    const resultRes = await fetch("https://api.2captcha.com/getTaskResult", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ clientKey: TWOCAPTCHA_API_KEY, taskId })
-    });
-    const resultData = await resultRes.json();
+    const resultData = await post2Captcha(
+      "getTaskResult",
+      { clientKey: TWOCAPTCHA_API_KEY, taskId },
+      config,
+      attemptLabel
+    );
 
     if (resultData.errorId !== 0) {
       throw new Error(`2Captcha getTaskResult erro: ${resultData.errorCode}`);
     }
     if (resultData.status === "ready") {
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const elapsed = ((Date.now() - attemptStartedAt) / 1000).toFixed(1);
       console.log(`  [2Captcha] CAPTCHA resolvido em ${elapsed}s!`);
       return (
         resultData.solution?.gRecaptchaResponse ??
@@ -232,8 +264,11 @@ async function solveWith2Captcha(pageUrl, sitekey, timeoutMs = 180000) {
       );
     }
 
-    console.log(`  [2Captcha] Aguardando... ${(elapsed / 1000).toFixed(0)}s (tentativa ${attempt})`);
-    await new Promise((r) => setTimeout(r, interval));
+    console.log(
+      `  [2Captcha] ${attemptLabel} — aguardando ` +
+      `${Math.round(elapsed / 1000)}s de ${Math.round(TIMEOUT_MS / 1000)}s`
+    );
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
   }
 
   throw new Error(`2Captcha timeout: solução não recebida em ${Math.round(TIMEOUT_MS / 1000)}s`);
@@ -255,7 +290,13 @@ async function solveHCaptcha(page, config) {
   if (useCapSolver) solvers.push({ name: "CapSolver", fn: () => solveWithCapSolver(pageUrl, sitekey) });
   if (use2Captcha)  solvers.push({
     name: "2Captcha",
-    fn: () => solveWith2Captcha(pageUrl, sitekey, Number(config.captcha_solver_timeout_ms) || 180000)
+    fn: (attempt, maxAttempts) => solveWith2Captcha(
+      pageUrl,
+      sitekey,
+      config,
+      attempt,
+      maxAttempts
+    )
   });
 
   if (solvers.length === 0) {
@@ -272,7 +313,7 @@ async function solveHCaptcha(page, config) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       console.log(`  [${solver.name}] Tentativa ${attempt}/${maxRetries}...`);
       try {
-        const token    = await solver.fn();
+        const token    = await solver.fn(attempt, maxRetries);
         const accepted = await injectHCaptchaToken(page, token);
 
         if (accepted) {
@@ -348,10 +389,12 @@ const DEFAULT_CONFIG = {
   limite_por_execucao: 1,
   reconsultar_processados: false,
   simular:             true,
-  captcha_max_retries: 1,
+  captcha_max_retries: 3,
   captcha_solver_timeout_ms: 180000,
+  captcha_poll_interval_ms: 5000,
+  captcha_rate_limit_base_ms: 15000,
   consulta_max_tentativas: 2,
-  consulta_timeout_total_ms: 360000,
+  consulta_timeout_total_ms: 660000,
   intervalo_entre_consultas_ms: 5000,
   reconsulta_apos_dias: 15,
   usar_controle_ciclo: true,
