@@ -10,6 +10,7 @@
     "db:inspect": "node scripts/inspecionar_nacionalidade.js",
     "db:migrate": "node scripts/aplicar_migracao.js migrations/001_consultas_nacionalidade.sql",
     "db:migrate:cycles": "node scripts/aplicar_migracao.js migrations/002_ciclos_consulta.sql",
+    "db:migrate:attempts": "node scripts/aplicar_migracao.js migrations/003_tentativas_e_ciclo_historico.sql",
     "db:validate": "node scripts/validar_integracao_postgres.js",
     "test:real": "node scripts/executar_teste_real.js"
   },

@@ -174,7 +174,7 @@ async function solveWithCapSolver(pageUrl, sitekey) {
 
 // ─── 2Captcha ─────────────────────────────────────────────────────────────────
 
-async function solveWith2Captcha(pageUrl, sitekey) {
+async function solveWith2Captcha(pageUrl, sitekey, timeoutMs = 180000) {
   if (!TWOCAPTCHA_API_KEY) throw new Error("TWOCAPTCHA_API_KEY não definida no .env");
 
   console.log("  [2Captcha] Criando tarefa...");
@@ -204,7 +204,7 @@ async function solveWith2Captcha(pageUrl, sitekey) {
   await new Promise((r) => setTimeout(r, 8000));
 
   const startTime = Date.now();
-  const TIMEOUT_MS = 120_000;
+  const TIMEOUT_MS = timeoutMs;
   let attempt = 0;
 
   while (Date.now() - startTime < TIMEOUT_MS) {
@@ -236,7 +236,7 @@ async function solveWith2Captcha(pageUrl, sitekey) {
     await new Promise((r) => setTimeout(r, interval));
   }
 
-  throw new Error("2Captcha timeout: solução não recebida em 120s");
+  throw new Error(`2Captcha timeout: solução não recebida em ${Math.round(TIMEOUT_MS / 1000)}s`);
 }
 
 // ─── Orquestrador: CapSolver → 2Captcha ──────────────────────────────────────
@@ -253,7 +253,10 @@ async function solveHCaptcha(page, config) {
 
   const solvers = [];
   if (useCapSolver) solvers.push({ name: "CapSolver", fn: () => solveWithCapSolver(pageUrl, sitekey) });
-  if (use2Captcha)  solvers.push({ name: "2Captcha",  fn: () => solveWith2Captcha(pageUrl, sitekey)  });
+  if (use2Captcha)  solvers.push({
+    name: "2Captcha",
+    fn: () => solveWith2Captcha(pageUrl, sitekey, Number(config.captcha_solver_timeout_ms) || 180000)
+  });
 
   if (solvers.length === 0) {
     throw new Error(
@@ -346,7 +349,9 @@ const DEFAULT_CONFIG = {
   reconsultar_processados: false,
   simular:             true,
   captcha_max_retries: 1,
-  consulta_timeout_total_ms: 180000,
+  captcha_solver_timeout_ms: 180000,
+  consulta_max_tentativas: 2,
+  consulta_timeout_total_ms: 360000,
   intervalo_entre_consultas_ms: 5000,
   reconsulta_apos_dias: 15,
   usar_controle_ciclo: true,
@@ -453,13 +458,16 @@ function maskCode(value) {
   return `${code.slice(0, 2)}${"*".repeat(Math.min(code.length - 4, 8))}${code.slice(-2)}`;
 }
 
-async function withTimeout(promise, timeoutMs, message) {
+async function withTimeout(promise, timeoutMs, message, onTimeout) {
   let timer;
   try {
     return await Promise.race([
       promise,
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+        timer = setTimeout(() => {
+          reject(new Error(message));
+          Promise.resolve(onTimeout?.()).catch(() => {});
+        }, timeoutMs);
       })
     ]);
   } finally {
@@ -635,6 +643,7 @@ function parsePortalDate(value) {
 function classifyError(error) {
   const message = String(error?.message ?? error ?? "Erro desconhecido");
   const firstLine = message.split(/\r?\n/, 1)[0].trim();
+  if (/tempo total|timeout total/i.test(message)) return { type: "timeout", message: firstLine };
   if (/captcha/i.test(message)) return { type: "captcha", message: firstLine };
   if (/goto|navega|net::|timeout.*page/i.test(message)) return { type: "navegacao", message: firstLine };
   if (/fase|timeline|identificar/i.test(message)) return { type: "extracao", message: firstLine };
@@ -796,12 +805,12 @@ export async function openPostgresStorage(config) {
             INSERT INTO public.historico_consultas_nacionalidade (
               nacionalidade_id, codigo_consulta, sucesso, fase, posicao_fase,
               total_fases, data_fase, possui_notificacao, titulos_notificacoes,
-              observacao, consultado_em
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+              observacao, consultado_em, ciclo_id
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
           `, [
             record.id, entry.codigo, Boolean(result), result?.status ?? null,
             position, total, parsePortalDate(result?.phaseDate), hasNotification,
-            titles, observacao, consultedAt
+            titles, observacao, consultedAt, cycleId
           ]);
 
           if (result) {
@@ -815,6 +824,9 @@ export async function openPostgresStorage(config) {
                      titulos_notificacoes = $7,
                      data_ultima_consulta = $8,
                      observacao_consulta = $9,
+                     data_ultima_tentativa = $8,
+                     status_ultima_tentativa = 'sucesso',
+                     erro_ultima_tentativa = NULL,
                      atualizado_em = now()
                WHERE id = $1
             `, [record.id, result.status, position, total, parsePortalDate(result.phaseDate),
@@ -822,8 +834,9 @@ export async function openPostgresStorage(config) {
           } else {
             await client.query(`
               UPDATE public.nacionalidade_portuguesa
-                 SET data_ultima_consulta = $2,
-                     observacao_consulta = $3,
+                 SET data_ultima_tentativa = $2,
+                     status_ultima_tentativa = 'erro',
+                     erro_ultima_tentativa = $3,
                      atualizado_em = now()
                WHERE id = $1
             `, [record.id, consultedAt, observacao]);
@@ -923,7 +936,7 @@ async function clickConsultar(page) {
     "text=Pesquisar"
   ]);
   if (!button) throw new Error("Botão de consulta não encontrado na página.");
-  await button.click();
+  await button.click({ noWaitAfter: true });
 }
 
 async function waitForManualCaptcha(page, rl) {
@@ -936,9 +949,15 @@ async function waitForManualCaptcha(page, rl) {
 // ─── Extração do status via wizard ───────────────────────────────────────────
 
 export async function extractProcessData(page) {
-  await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
-  await page.waitForSelector("[id*='Timeline']", { timeout: 15000 }).catch(() => {});
-  await page.waitForTimeout(1000);
+  try {
+    await page.waitForSelector(".wizard-wrapper-item", {
+      state: "attached",
+      timeout: 45000
+    });
+  } catch {
+    throw new Error("Resultado carregou sem apresentar as fases do processo.");
+  }
+  await page.waitForTimeout(500);
 
   const result = await page.evaluate(() => {
     const items = document.querySelectorAll(".wizard-wrapper-item");
@@ -1035,6 +1054,32 @@ async function consultarStatus(page, codigo, config, rl) {
   return extractProcessData(page);
 }
 
+async function consultarComTentativas(browser, codigo, config, rl) {
+  const maxAttempts = Number(config.consulta_max_tentativas) || 1;
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const page = await browser.newPage();
+    try {
+      return await withTimeout(
+        consultarStatus(page, codigo, config, rl),
+        Number(config.consulta_timeout_total_ms) || 240000,
+        "Tempo total da consulta excedido",
+        () => page.close({ runBeforeUnload: false })
+      );
+    } catch (error) {
+      lastError = error;
+      const classified = classifyError(error);
+      const retryable = ["timeout", "navegacao", "extracao"].includes(classified.type);
+      if (!retryable || attempt === maxAttempts) throw error;
+      console.warn(`  [retry] ${classified.type}; nova pagina (${attempt + 1}/${maxAttempts}).`);
+    } finally {
+      await page.close({ runBeforeUnload: false }).catch(() => {});
+    }
+  }
+  throw lastError;
+}
+
 async function main() {
   const config = loadConfig();
 
@@ -1088,7 +1133,6 @@ async function main() {
   }
   const rl      = readline.createInterface({ input, output });
   const browser = await chromium.launch({ headless: Boolean(config.headless) });
-  const page    = await browser.newPage();
 
   try {
     for (let rowNumber = 2; rowNumber <= spreadsheet.rowCount; rowNumber++) {
@@ -1103,11 +1147,7 @@ async function main() {
 
       console.log(`\nItem ${rowNumber - 1}: consultando codigo ${maskCode(codigo)}...`);
       try {
-        const result = await withTimeout(
-          consultarStatus(page, codigo, config, rl),
-          Number(config.consulta_timeout_total_ms) || 180000,
-          "Tempo total da consulta excedido"
-        );
+        const result = await consultarComTentativas(browser, codigo, config, rl);
         await spreadsheet.updateRow(rowNumber, result, "Consulta realizada");
         console.log(`Linha ${rowNumber}: ${result.status} (${result.position})`);
         summary.sucessos++;
@@ -1121,7 +1161,7 @@ async function main() {
       }
 
       if (rowNumber < spreadsheet.rowCount && intervalMs > 0) {
-        await page.waitForTimeout(intervalMs);
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
       }
     }
   } finally {
