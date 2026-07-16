@@ -1,0 +1,6 @@
+.env
+google-service-account.json
+*.service-account.json
+*.xlsx
+*.png
+npm-debug.log*

@@ -1,0 +1,12 @@
+.git
+.agents
+.codex
+.env
+node_modules
+npm-debug.log*
+google-service-account.json
+*.service-account.json
+*.xlsx
+*.png
+Captura*
+captcha.png
