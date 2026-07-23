@@ -245,8 +245,8 @@ Notas:
 - O sistema cria uma nota comum no lead.
 - O ID dessa nota fica salvo no banco.
 - Quando o conteúdo muda, a nota existente é atualizada.
-- Na criação, envia o tipo e o conteúdo; na edição, envia somente o novo
-  conteúdo aceito pela API do Kommo.
+- Tanto na criação quanto na edição, envia a entidade do lead, o tipo da nota e
+  o conteúdo, conforme a validação exigida pela API do Kommo.
 - Um hash evita atualizações quando o conteúdo não mudou.
 
 Finalização:

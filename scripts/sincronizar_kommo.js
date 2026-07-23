@@ -216,7 +216,11 @@ async function upsertNote(record, leadId, currentNoteId, content) {
     try {
       await kommoRequest(`/api/v4/leads/notes/${currentNoteId}`, {
         method: "PATCH",
-        body: JSON.stringify({ params: { text: content } })
+        body: JSON.stringify({
+          entity_id: Number(leadId),
+          note_type: "common",
+          params: { text: content }
+        })
       });
       return currentNoteId;
     } catch (error) {
