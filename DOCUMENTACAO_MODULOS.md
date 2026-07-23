@@ -162,6 +162,14 @@ Persistência:
 - O resumo da execução fica em `public.ciclos_consulta_nacionalidade`.
 - Erros de uma tentativa não apagam o último resultado bem-sucedido.
 
+Auditoria nos logs:
+
+- Ao finalizar um ciclo, o worker imprime o marcador
+  `RELATORIO_AUDITORIA_CICLO_CONSULTA`.
+- O JSON contém identificação e horário do ciclo, totais, distribuição por
+  fase, finalizações e o resultado individual de cada cliente.
+- O relatório é enviado ao stdout e fica disponível nos logs do EasyPanel.
+
 ### 2.4. Sincronização com o Kommo
 
 Arquivo: `scripts/sincronizar_kommo.js`
@@ -265,6 +273,10 @@ Limite:
   operacional de sete.
 - Em uma resposta HTTP 429, o sistema respeita `Retry-After` e tenta novamente
   gradualmente.
+
+Ao final de cada lote, o módulo imprime
+`RELATORIO_AUDITORIA_KOMMO`, contendo resumo e detalhes por cliente: destino,
+ação, lead, nota, atualização da nota ou erro.
 
 ## 3. Módulos auxiliares
 

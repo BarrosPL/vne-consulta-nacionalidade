@@ -387,12 +387,21 @@ const summary = {
   ambiguos: 0,
   erros: 0
 };
+const kommoRunStartedAt = new Date();
+const auditDetails = [];
 const sheetUpdates = [];
 try {
   const candidates = await loadCandidates(pool);
   summary.selecionados = candidates.length;
   for (const record of candidates) {
     const target = targetStatus(record);
+    const audit = {
+      id: record.nacionalidade_id,
+      cliente: record.cliente,
+      destino: target.reason,
+      status_id_destino: target.id,
+      motivo_pendencia: record.motivo_pendencia_kommo
+    };
     try {
       let lead = await validateStoredLead(record.crm_lead_id);
       let created = false;
@@ -428,33 +437,65 @@ try {
             ? "seria_movido"
             : "ja_na_etapa_correta";
         console.log(`[diagnostico] ${record.nacionalidade_id}: ${action} → ${target.reason}`);
+        audit.resultado = "diagnostico";
+        audit.acao = action;
+        auditDetails.push(audit);
         continue;
       }
       if (created) summary.criados++;
       if (needsMove) {
         await moveLead(lead.id, target);
         summary.movidos++;
+        audit.acao = "movido";
       } else if (!created) {
         summary.ja_na_etapa_correta++;
+        audit.acao = "ja_na_etapa_correta";
+      } else {
+        audit.acao = "criado";
       }
       const content = noteContent(record, target);
       const noteHash = createHash("sha256").update(content).digest("hex");
       let noteId = record.crm_nota_status_id;
-      if (!noteId || noteHash !== record.conteudo_nota_hash) {
+      const noteUpdated = !noteId || noteHash !== record.conteudo_nota_hash;
+      if (noteUpdated) {
         noteId = await upsertNote(record, lead.id, noteId, content);
       }
       await saveSuccess(pool, record, {
         leadId: lead.id, noteId, noteHash, target, created
       });
       if (normalize(record.esta_no_kommo) !== "sim") sheetUpdates.push(record);
+      audit.resultado = "sucesso";
+      audit.lead_id = lead.id;
+      audit.nota_id = noteId;
+      audit.nota_atualizada = noteUpdated;
+      auditDetails.push(audit);
     } catch (error) {
       summary.erros++;
       console.error(`[kommo] ${record.nacionalidade_id}: ${error.message}`);
-      if (APPLY) await saveError(pool, record, error);
+      if (APPLY) {
+        await saveError(pool, record, error).catch((saveErrorFailure) => {
+          console.error(
+            `[kommo] ${record.nacionalidade_id}: falha ao registrar erro: ${saveErrorFailure.message}`
+          );
+        });
+      }
+      audit.resultado = "erro";
+      audit.erro = String(error.message).slice(0, 2000);
+      auditDetails.push(audit);
     }
   }
   if (APPLY) await markKommoInSheet(sheetUpdates);
   console.log(JSON.stringify({ modo: APPLY ? "aplicar" : "diagnostico", ...summary }, null, 2));
+  console.log("\n========== RELATORIO_AUDITORIA_KOMMO ==========");
+  console.log(JSON.stringify({
+    tipo: "sincronizacao_kommo",
+    modo: APPLY ? "aplicar" : "diagnostico",
+    iniciado_em: kommoRunStartedAt.toISOString(),
+    finalizado_em: new Date().toISOString(),
+    limite_requisicoes_por_segundo: REQUESTS_PER_SECOND,
+    resumo: summary,
+    detalhes: auditDetails
+  }, null, 2));
 } finally {
   await lockClient.query(
     "SELECT pg_advisory_unlock(hashtext('vne_sincronizacao_kommo'))"

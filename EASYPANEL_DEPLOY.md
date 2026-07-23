@@ -126,3 +126,22 @@ WHERE consultado_em >= (
 - O último resultado válido não é apagado por uma falha posterior.
 - Códigos duplicados são consultados uma vez e atualizam todos os registros relacionados.
 - Não usar mais de uma réplica, embora a trava do banco ofereça uma segunda proteção.
+
+## Auditoria nos logs
+
+Ao final de cada ciclo completo de consultas, procure:
+
+```text
+========== RELATORIO_AUDITORIA_CICLO_CONSULTA ==========
+```
+
+O JSON seguinte contém o ciclo, totais, fases, finalizações e detalhes por
+cliente. Cada lote do Kommo gera:
+
+```text
+========== RELATORIO_AUDITORIA_KOMMO ==========
+```
+
+Esse relatório contém criações, movimentações, etapas mantidas, notas e erros.
+O histórico e os ciclos também permanecem registrados no PostgreSQL caso a
+retenção dos logs do EasyPanel expire.

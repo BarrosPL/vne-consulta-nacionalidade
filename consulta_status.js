@@ -942,6 +942,40 @@ export async function openPostgresStorage(config) {
       ]);
       cycleFinalized = true;
     },
+    async auditReport() {
+      if (!cycleId) return null;
+      const cycle = await pool.query(`
+        SELECT id, status, iniciado_em, finalizado_em, proxima_execucao_em,
+               codigos_selecionados, registros_selecionados, sucessos, erros,
+               ignorados, detalhes_erros, observacao
+          FROM public.ciclos_consulta_nacionalidade
+         WHERE id=$1
+      `, [cycleId]);
+      const details = await pool.query(`
+        SELECT h.nacionalidade_id AS id, n.cliente, h.sucesso, h.fase,
+               h.posicao_fase, h.total_fases, h.data_fase,
+               h.possui_notificacao, h.titulos_notificacoes,
+               n.processo_finalizado, h.observacao, h.consultado_em
+          FROM public.historico_consultas_nacionalidade h
+          JOIN public.nacionalidade_portuguesa n ON n.id=h.nacionalidade_id
+         WHERE h.ciclo_id=$1
+         ORDER BY h.id
+      `, [cycleId]);
+      const phases = {};
+      for (const detail of details.rows) {
+        const phase = detail.fase || (detail.sucesso ? "sem_fase" : "erro");
+        phases[phase] = (phases[phase] ?? 0) + 1;
+      }
+      return {
+        tipo: "ciclo_consulta",
+        ciclo: cycle.rows[0] ?? null,
+        fases: phases,
+        finalizados_neste_resultado: details.rows.filter(
+          (detail) => detail.sucesso && detail.processo_finalizado
+        ).length,
+        detalhes: details.rows
+      };
+    },
     async close() {
       if (cycleId && !cycleFinalized) {
         await lockClient.query(`
@@ -1176,6 +1210,15 @@ async function main() {
     const emptySummary = { selecionados: 0, sucessos: 0, erros: 0, ignorados: 0, erros_por_tipo: {} };
     await spreadsheet.finalize?.(emptySummary);
     console.log(spreadsheet.finishMessage);
+    try {
+      const audit = await spreadsheet.auditReport?.();
+      if (audit) {
+        console.log("\n========== RELATORIO_AUDITORIA_CICLO_CONSULTA ==========");
+        console.log(JSON.stringify(audit, null, 2));
+      }
+    } catch (error) {
+      console.warn(`[auditoria] Não foi possível gerar o relatório do ciclo: ${error.message}`);
+    }
     await spreadsheet.close?.();
     return;
   }
@@ -1191,7 +1234,7 @@ async function main() {
     return;
   }
 
-  const summary = {
+const summary = {
     selecionados: Math.max(spreadsheet.rowCount - 1, 0),
     sucessos: 0,
     erros: 0,
@@ -1239,6 +1282,15 @@ async function main() {
     await browser.close();
     rl.close();
     await spreadsheet.finalize?.(summary);
+    try {
+      const audit = await spreadsheet.auditReport?.();
+      if (audit) {
+        console.log("\n========== RELATORIO_AUDITORIA_CICLO_CONSULTA ==========");
+        console.log(JSON.stringify(audit, null, 2));
+      }
+    } catch (error) {
+      console.warn(`[auditoria] Não foi possível gerar o relatório do ciclo: ${error.message}`);
+    }
     await spreadsheet.close?.();
   }
 
