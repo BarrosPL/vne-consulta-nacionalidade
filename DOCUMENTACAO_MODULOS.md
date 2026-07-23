@@ -329,6 +329,28 @@ Comando:
 npm run test:real
 ```
 
+### 3.6. Teste do fluxo completo
+
+Arquivo: `scripts/testar_fluxo_completo.js`
+
+Executa uma validação integrada e controlada:
+
+1. Sincroniza a planilha inteira com o banco.
+2. Seleciona até 10 pessoas elegíveis.
+3. Consulta individualmente essas pessoas no portal.
+4. Sincroniza exatamente as mesmas pessoas com o Kommo.
+5. Imprime um relatório consolidado com sucessos e erros.
+
+Comando:
+
+```bash
+npm run teste:fluxo:10
+```
+
+O limite pode ser substituído por `TESTE_FLUXO_LIMITE`, entre 1 e 50. A
+sincronização da planilha continua integral porque ela precisa detectar
+inclusões e exclusões; o limite se aplica às consultas e ao Kommo.
+
 ## 4. Configuração
 
 ### 4.1. `config.json`
@@ -448,6 +470,7 @@ Mensagens esperadas:
 | `npm run sync:aplicar` | Aplica planilha → banco |
 | `npm run kommo:diagnostico` | Analisa banco → Kommo sem alterar |
 | `npm run kommo:aplicar` | Aplica banco → Kommo |
+| `npm run teste:fluxo:10` | Testa o fluxo completo com até 10 pessoas |
 | `npm run db:map` | Mapeia a estrutura do banco |
 | `npm run db:inspect` | Inspeciona os dados de nacionalidade |
 | `npm run db:validate` | Valida a integração PostgreSQL |

@@ -19,6 +19,7 @@
     "sync:aplicar": "node scripts/sincronizar_planilha.js --aplicar",
     "kommo:diagnostico": "node scripts/sincronizar_kommo.js",
     "kommo:aplicar": "node scripts/sincronizar_kommo.js --aplicar",
+    "teste:fluxo:10": "node scripts/testar_fluxo_completo.js",
     "test:real": "node scripts/executar_teste_real.js"
   },
   "dependencies": {
