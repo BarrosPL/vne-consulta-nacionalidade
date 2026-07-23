@@ -480,6 +480,80 @@ Mensagens esperadas:
 [agendador] Proxima verificacao:
 ```
 
+### Configuração recomendada de produção
+
+```env
+TZ=America/Sao_Paulo
+
+SINCRONIZACAO_ATIVA=true
+SINCRONIZACAO_INTERVALO_MINUTOS=10
+SINCRONIZAR_AO_INICIAR=true
+
+EXECUTAR_AO_INICIAR=true
+AGENDADOR_HORA=2
+AGENDADOR_MINUTO=0
+POSTGRES_CICLO_DIAS=15
+POSTGRES_LIMITE=1000
+
+KOMMO_SINCRONIZACAO_ATIVA=true
+KOMMO_INTERVALO_MINUTOS=15
+KOMMO_SINCRONIZAR_AO_INICIAR=true
+KOMMO_LIMITE_POR_EXECUCAO=30
+KOMMO_REQUISICOES_POR_SEGUNDO=4
+```
+
+Sequência efetiva:
+
+```text
+Planilha sincroniza com o PostgreSQL
+→ processos elegíveis são consultados
+→ cada resultado confirmado cria uma pendência para o Kommo
+→ o Kommo consome as pendências em lotes
+→ a etapa só muda quando o status_id atual é diferente
+→ a nota é criada ou atualizada
+→ o sucesso encerra a pendência correspondente
+```
+
+As rotinas têm agendas independentes. Para um cliente específico, o Kommo
+somente recebe um resultado depois que a transação da consulta foi confirmada
+no PostgreSQL. Se uma alteração mais nova ocorrer durante uma chamada ao Kommo,
+o versionamento mantém uma nova pendência para o próximo lote.
+
+### Marcadores de auditoria
+
+Use estes textos para localizar relatórios estruturados nos logs:
+
+```text
+RELATORIO_AUDITORIA_CICLO_CONSULTA
+RELATORIO_AUDITORIA_KOMMO
+```
+
+O primeiro é emitido uma vez ao final do ciclo global de consultas. O segundo
+é emitido ao final de cada lote do Kommo. Como o Kommo pode continuar
+processando pendências depois que o portal terminou, não existe um único
+relatório combinado para os dois módulos.
+
+Os logs são uma visualização operacional. A fonte persistente de auditoria é:
+
+- `public.historico_consultas_nacionalidade`;
+- `public.ciclos_consulta_nacionalidade`;
+- `public.sincronizacao_crm_nacionalidade`.
+
+### Estado inicial da entrada em produção
+
+Em 23 de julho de 2026, antes do primeiro ciclo completo desta versão:
+
+- 28 entradas de histórico anteriores foram removidas;
+- 3 ciclos anteriores foram removidos;
+- as identidades das duas tabelas foram reiniciadas;
+- os cadastros, resultados atuais e estados de finalização dos clientes foram
+  preservados;
+- o próximo início com `EXECUTAR_AO_INICIAR=true` deve abrir um ciclo global
+  imediatamente, pois não existe ciclo concluído anterior.
+
+Essa limpeza foi uma ação operacional única e não faz parte do comportamento
+recorrente do sistema.
+
 ## 7. Comandos principais
 
 | Comando | Função |
