@@ -351,9 +351,6 @@ try {
         }
         lead = matches[0] ?? null;
         if (!lead) {
-          if (normalize(record.esta_no_kommo) === "sim") {
-            throw new Error("Marcado como SIM, mas nenhum lead foi encontrado pelo nome.");
-          }
           if (APPLY) lead = await createLead(record, target);
           created = true;
         } else {
