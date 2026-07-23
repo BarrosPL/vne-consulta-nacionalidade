@@ -13,6 +13,7 @@ const TEST_NACIONALIDADE_ID = process.env.KOMMO_TESTE_NACIONALIDADE_ID
 const BASE_URL = String(process.env.KOMMO_BASE_URL ?? "https://vocenaeuropa.kommo.com").replace(/\/$/, "");
 const TOKEN = process.env.KOMMO_ACCESS_TOKEN;
 const PIPELINE_ID = Number(process.env.KOMMO_PIPELINE_ID ?? 8322487);
+const REQUESTS_PER_SECOND = Number(process.env.KOMMO_REQUISICOES_POR_SEGUNDO ?? 4);
 const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID
   ?? "10YNu_c-TGiSpb2QwfWDdQgQYuvXYXqwreCmxRETamFs";
 const SHEET_NAME = process.env.GOOGLE_SHEET_NAME ?? "Andamentos";
@@ -27,6 +28,8 @@ const STATUS = {
   exigencia: Number(process.env.KOMMO_STATUS_EXIGENCIA ?? 76490168),
   risco: Number(process.env.KOMMO_STATUS_RISCO_INDEFERIMENTO ?? 105756056)
 };
+
+let nextKommoRequestAt = 0;
 
 function text(value) {
   return String(value ?? "").trim();
@@ -105,9 +108,31 @@ function noteContent(record, target) {
   return lines.join("\n");
 }
 
+async function waitForKommoRateLimit() {
+  const interval = Math.ceil(1000 / REQUESTS_PER_SECOND);
+  const now = Date.now();
+  const waitMs = Math.max(0, nextKommoRequestAt - now);
+  if (waitMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+  nextKommoRequestAt = Math.max(Date.now(), nextKommoRequestAt) + interval;
+}
+
+function retryAfterMs(response, attempt) {
+  const value = response.headers.get("retry-after");
+  if (value) {
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1000);
+    const date = Date.parse(value);
+    if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
+  }
+  return attempt * 2000;
+}
+
 async function kommoRequest(route, options = {}) {
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await waitForKommoRateLimit();
     const response = await fetch(`${BASE_URL}${route}`, {
       ...options,
       headers: {
@@ -121,10 +146,22 @@ async function kommoRequest(route, options = {}) {
     const body = await response.json().catch(() => ({}));
     if (response.ok) return body;
     if ((response.status === 429 || response.status >= 500) && attempt < maxAttempts) {
-      await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
+      const waitMs = retryAfterMs(response, attempt);
+      console.warn(
+        `[kommo] HTTP ${response.status}; nova tentativa em ${Math.ceil(waitMs / 1000)}s.`
+      );
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
       continue;
     }
-    const error = new Error(`Kommo HTTP ${response.status}: ${body?.title ?? body?.detail ?? "falha"}`);
+    const validation = body?.["validation-errors"]
+      ?? body?.validation_errors
+      ?? body?.errors;
+    const validationText = validation
+      ? ` | validação: ${JSON.stringify(validation).slice(0, 1500)}`
+      : "";
+    const error = new Error(
+      `Kommo HTTP ${response.status}: ${body?.detail ?? body?.title ?? "falha"}${validationText}`
+    );
     error.status = response.status;
     throw error;
   }
@@ -179,7 +216,7 @@ async function upsertNote(record, leadId, currentNoteId, content) {
     try {
       await kommoRequest(`/api/v4/leads/notes/${currentNoteId}`, {
         method: "PATCH",
-        body: JSON.stringify({ note_type: "common", params: { text: content } })
+        body: JSON.stringify({ params: { text: content } })
       });
       return currentNoteId;
     } catch (error) {
@@ -320,6 +357,11 @@ if (!TOKEN) throw new Error("KOMMO_ACCESS_TOKEN não definido.");
 if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL não definida.");
 if (!Number.isInteger(LIMIT) || LIMIT < 1 || LIMIT > 250) {
   throw new Error("KOMMO_LIMITE_POR_EXECUCAO deve estar entre 1 e 250.");
+}
+if (!Number.isFinite(REQUESTS_PER_SECOND)
+    || REQUESTS_PER_SECOND < 1
+    || REQUESTS_PER_SECOND > 7) {
+  throw new Error("KOMMO_REQUISICOES_POR_SEGUNDO deve estar entre 1 e 7.");
 }
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 2 });

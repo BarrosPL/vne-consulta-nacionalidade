@@ -58,6 +58,7 @@ KOMMO_STATUS_EXIGENCIA=76490168
 KOMMO_STATUS_RISCO_INDEFERIMENTO=105756056
 KOMMO_SINCRONIZACAO_ATIVA=false
 KOMMO_INTERVALO_MINUTOS=15
+KOMMO_REQUISICOES_POR_SEGUNDO=4
 KOMMO_SINCRONIZAR_AO_INICIAR=false
 ```
 
@@ -70,6 +71,11 @@ npm run db:migrate:kommo-queue
 Essa migração coloca os processos ativos e principais na fila inicial. O
 agendador consumirá a fila em lotes definidos por
 `KOMMO_LIMITE_POR_EXECUCAO`.
+
+O limite padrão de quatro requisições por segundo mantém margem abaixo do
+limite operacional do Kommo. O controle se aplica a buscas, leituras,
+movimentações e notas. Respostas HTTP 429 respeitam o cabeçalho `Retry-After`
+antes de uma nova tentativa.
 
 `EXECUTAR_AO_INICIAR=true` faz uma verificação no deploy ou reinício. Isso não força um novo ciclo: se os 15 dias ainda não venceram, o banco encerra a verificação sem processar registros.
 

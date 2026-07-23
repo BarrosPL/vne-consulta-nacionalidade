@@ -245,6 +245,8 @@ Notas:
 - O sistema cria uma nota comum no lead.
 - O ID dessa nota fica salvo no banco.
 - Quando o conteúdo muda, a nota existente é atualizada.
+- Na criação, envia o tipo e o conteúdo; na edição, envia somente o novo
+  conteúdo aceito pela API do Kommo.
 - Um hash evita atualizações quando o conteúdo não mudou.
 
 Finalização:
@@ -257,6 +259,12 @@ Limite:
 - `KOMMO_LIMITE_POR_EXECUCAO` controla quantos registros são processados por
   ciclo.
 - Com o valor 30, um volume maior é consumido em lotes nos ciclos seguintes.
+- `KOMMO_REQUISICOES_POR_SEGUNDO` limita globalmente buscas, leituras e escritas
+  feitas pelo processo.
+- O padrão é quatro requisições por segundo, mantendo margem abaixo do limite
+  operacional de sete.
+- Em uma resposta HTTP 429, o sistema respeita `Retry-After` e tenta novamente
+  gradualmente.
 
 ## 3. Módulos auxiliares
 
