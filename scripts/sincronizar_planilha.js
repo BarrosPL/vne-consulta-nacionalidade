@@ -71,6 +71,30 @@ function normalizedText(value) {
   return text(value).normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
 }
 
+function dateKey(value) {
+  if (!value) return "";
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
+  return text(value).slice(0, 10);
+}
+
+function sourceDataChanged(existing, row) {
+  if (!existing) return true;
+  if (text(existing.id_planilha) !== row.uuid) return true;
+  if (!existing.ativo_na_planilha) return true;
+  const textFields = [
+    "cliente", "esta_no_kommo", "numero_processo", "codigo_consulta",
+    "parceria", "status", "conservatoria", "prazo", "anotacoes",
+    "contato", "email", "google_drive"
+  ];
+  if (textFields.some((field) => text(existing[field]) !== text(row[field]))) {
+    return true;
+  }
+  return ["data_entrada", "aprovado", "data_submissao"]
+    .some((field) => dateKey(existing[field]) !== dateKey(row[field]));
+}
+
 function isManualFinalStatus(value) {
   return ["terminado", "concluido", "encerrado", "finalizado"].includes(normalizedText(value));
 }
@@ -145,7 +169,10 @@ async function loadDatabase(pool) {
     "registro_duplicado", "registro_principal_id"
   ].every((name) => names.has(name));
   const records = await pool.query(`
-    SELECT id, id_registro, cliente, numero_processo, codigo_consulta,
+    SELECT id, id_registro, cliente, esta_no_kommo, numero_processo,
+           codigo_consulta, data_entrada, parceria, status, conservatoria,
+           aprovado, prazo, data_submissao, anotacoes, contato, email,
+           google_drive,
            ${migrationReady ? "id_planilha::text" : "NULL::text AS id_planilha"},
            ${migrationReady ? "ativo_na_planilha" : "true AS ativo_na_planilha"}
       FROM public.nacionalidade_portuguesa
@@ -272,7 +299,7 @@ async function applyDatabase(pool, prepared) {
         row.codigo_consulta || null, row.data_entrada, row.parceria || null, row.status || null,
         row.conservatoria || null, row.aprovado, row.prazo || null, row.data_submissao,
         row.anotacoes || null, row.contato || null, row.email || null, row.google_drive || null,
-        isManualFinalStatus(row.status)
+        isManualFinalStatus(row.status), sourceDataChanged(row.existing, row)
       ];
       if (row.existing) {
         await client.query(`
@@ -298,19 +325,7 @@ async function applyDatabase(pool, prepared) {
                  END,
                  ativo_na_planilha=true, removido_da_planilha_em=NULL,
                  sincronizado_planilha_em=now(),
-                 atualizado_em=CASE
-                   WHEN ROW(
-                     id_planilha, cliente, esta_no_kommo, numero_processo,
-                     codigo_consulta, data_entrada, parceria, status,
-                     conservatoria, aprovado, prazo, data_submissao, anotacoes,
-                     contato, email, google_drive, ativo_na_planilha
-                   ) IS DISTINCT FROM ROW(
-                     $2::uuid, $3, $4, $5, $6, $7, $8, $9::varchar, $10, $11,
-                     $12, $13, $14, $15, $16, $17, true
-                   )
-                   THEN now()
-                   ELSE atualizado_em
-                 END
+                 atualizado_em=CASE WHEN $19 THEN now() ELSE atualizado_em END
            WHERE id=$1
         `, [row.existing.id, ...values]);
       } else {
