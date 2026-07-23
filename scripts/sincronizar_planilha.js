@@ -300,12 +300,12 @@ async function applyDatabase(pool, prepared) {
                  sincronizado_planilha_em=now(),
                  atualizado_em=CASE
                    WHEN ROW(
-                     id_planilha::text, cliente, esta_no_kommo, numero_processo,
-                     codigo_consulta, data_entrada, parceria, status::text,
+                     id_planilha, cliente, esta_no_kommo, numero_processo,
+                     codigo_consulta, data_entrada, parceria, status,
                      conservatoria, aprovado, prazo, data_submissao, anotacoes,
                      contato, email, google_drive, ativo_na_planilha
                    ) IS DISTINCT FROM ROW(
-                     $2::text, $3, $4, $5, $6, $7, $8, $9::text, $10, $11,
+                     $2::uuid, $3, $4, $5, $6, $7, $8, $9::varchar, $10, $11,
                      $12, $13, $14, $15, $16, $17, true
                    )
                    THEN now()
