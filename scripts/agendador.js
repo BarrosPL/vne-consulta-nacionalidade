@@ -7,6 +7,9 @@ const validateOnly = String(process.env.AGENDADOR_APENAS_VALIDAR ?? "false").toL
 const syncEnabled = String(process.env.SINCRONIZACAO_ATIVA ?? "true").toLowerCase() === "true";
 const syncIntervalMinutes = Number(process.env.SINCRONIZACAO_INTERVALO_MINUTOS ?? 10);
 const syncRunOnStart = String(process.env.SINCRONIZAR_AO_INICIAR ?? "false").toLowerCase() === "true";
+const kommoEnabled = String(process.env.KOMMO_SINCRONIZACAO_ATIVA ?? "false").toLowerCase() === "true";
+const kommoIntervalMinutes = Number(process.env.KOMMO_INTERVALO_MINUTOS ?? 15);
+const kommoRunOnStart = String(process.env.KOMMO_SINCRONIZAR_AO_INICIAR ?? "false").toLowerCase() === "true";
 
 if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
   throw new Error("AGENDADOR_HORA deve estar entre 0 e 23.");
@@ -17,11 +20,16 @@ if (!Number.isInteger(minute) || minute < 0 || minute > 59) {
 if (!Number.isInteger(syncIntervalMinutes) || syncIntervalMinutes < 1 || syncIntervalMinutes > 1440) {
   throw new Error("SINCRONIZACAO_INTERVALO_MINUTOS deve estar entre 1 e 1440.");
 }
+if (!Number.isInteger(kommoIntervalMinutes) || kommoIntervalMinutes < 1 || kommoIntervalMinutes > 1440) {
+  throw new Error("KOMMO_INTERVALO_MINUTOS deve estar entre 1 e 1440.");
+}
 
 let child = null;
 let timer = null;
 let syncChild = null;
 let syncTimer = null;
+let kommoChild = null;
+let kommoTimer = null;
 
 function nextExecution() {
   const now = new Date();
@@ -99,13 +107,40 @@ function scheduleSync() {
   console.log(`[sincronizacao] Intervalo configurado: ${syncIntervalMinutes} minuto(s).`);
 }
 
+function executeKommo() {
+  if (!kommoEnabled) return;
+  if (kommoChild) {
+    console.warn("[kommo] Execucao anterior ainda ativa; ciclo ignorado.");
+    return;
+  }
+  console.log(`[kommo] Iniciando sincronizacao: ${new Date().toISOString()}`);
+  kommoChild = spawn(process.execPath, ["scripts/sincronizar_kommo.js", "--aplicar"], {
+    cwd: process.cwd(),
+    stdio: "inherit",
+    env: process.env
+  });
+  kommoChild.once("error", (error) => console.error(`[kommo] Falha ao iniciar: ${error.message}`));
+  kommoChild.once("exit", (code, signal) => {
+    console.log(`[kommo] Encerrada: codigo=${code ?? "-"}, sinal=${signal ?? "-"}`);
+    kommoChild = null;
+  });
+}
+
+function scheduleKommo() {
+  if (!kommoEnabled) return;
+  kommoTimer = setInterval(executeKommo, kommoIntervalMinutes * 60 * 1000);
+  console.log(`[kommo] Intervalo configurado: ${kommoIntervalMinutes} minuto(s).`);
+}
+
 function shutdown(signal) {
   console.log(`[agendador] Encerrando por ${signal}.`);
   if (timer) clearTimeout(timer);
   if (syncTimer) clearInterval(syncTimer);
+  if (kommoTimer) clearInterval(kommoTimer);
   if (child) child.kill("SIGTERM");
   if (syncChild) syncChild.kill("SIGTERM");
-  setTimeout(() => process.exit(0), child || syncChild ? 10000 : 0);
+  if (kommoChild) kommoChild.kill("SIGTERM");
+  setTimeout(() => process.exit(0), child || syncChild || kommoChild ? 10000 : 0);
 }
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
@@ -116,6 +151,8 @@ if (validateOnly) {
 } else {
   if (syncRunOnStart) executeSync();
   scheduleSync();
+  if (kommoRunOnStart) executeKommo();
+  scheduleKommo();
   if (runOnStart) await execute();
   schedule();
 }

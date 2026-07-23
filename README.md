@@ -68,6 +68,25 @@ npm.cmd run sync:aplicar
 Um registro só é elegível para consulta quando está ativo na planilha, não é
 duplicata, possui código e ainda não foi finalizado.
 
+## Integração com Kommo
+
+O diagnóstico consulta o Kommo, mas não cria nem altera leads:
+
+```powershell
+npm.cmd run kommo:diagnostico
+```
+
+O modo de aplicação localiza ou cria leads pelo nome dentro do funil, movimenta
+para a etapa correspondente e mantém uma única nota de status:
+
+```powershell
+npm.cmd run db:migrate:kommo
+npm.cmd run kommo:aplicar
+```
+
+Por segurança, `KOMMO_SINCRONIZACAO_ATIVA` e
+`KOMMO_SINCRONIZAR_AO_INICIAR` começam desabilitados.
+
 ## EasyPanel
 
 O `Dockerfile` inicia um agendador diário. O worker só abre um ciclo completo quando o intervalo configurado de 15 dias estiver vencido.
