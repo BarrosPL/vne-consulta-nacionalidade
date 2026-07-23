@@ -11,7 +11,10 @@
     "db:migrate": "node scripts/aplicar_migracao.js migrations/001_consultas_nacionalidade.sql",
     "db:migrate:cycles": "node scripts/aplicar_migracao.js migrations/002_ciclos_consulta.sql",
     "db:migrate:attempts": "node scripts/aplicar_migracao.js migrations/003_tentativas_e_ciclo_historico.sql",
+    "db:migrate:sync": "node scripts/aplicar_migracao.js migrations/004_sincronizacao_planilha_e_elegibilidade.sql",
     "db:validate": "node scripts/validar_integracao_postgres.js",
+    "sync:diagnostico": "node scripts/sincronizar_planilha.js",
+    "sync:aplicar": "node scripts/sincronizar_planilha.js --aplicar",
     "test:real": "node scripts/executar_teste_real.js"
   },
   "dependencies": {

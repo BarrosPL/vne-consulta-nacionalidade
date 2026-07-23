@@ -20,5 +20,8 @@
   "reconsulta_apos_dias": 15,
   "usar_controle_ciclo": true,
   "ciclo_intervalo_dias": 15,
+  "google_sheet_id": "10YNu_c-TGiSpb2QwfWDdQgQYuvXYXqwreCmxRETamFs",
+  "google_sheet_name": "Andamentos",
+  "google_credentials_file": "google-service-account.json",
   "simular": true
 }

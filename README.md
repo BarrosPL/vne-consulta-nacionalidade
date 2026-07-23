@@ -11,6 +11,7 @@ Tabelas principais:
 - `public.nacionalidade_portuguesa`;
 - `public.historico_consultas_nacionalidade`;
 - `public.ciclos_consulta_nacionalidade`.
+- `public.sincronizacoes_planilha_nacionalidade`.
 
 Os campos manuais `status` e `anotacoes` não são sobrescritos.
 
@@ -44,6 +45,28 @@ Migrações:
 - `migrations/001_consultas_nacionalidade.sql`;
 - `migrations/002_ciclos_consulta.sql`.
 - `migrations/003_tentativas_e_ciclo_historico.sql`.
+- `migrations/004_sincronizacao_planilha_e_elegibilidade.sql`.
+
+## Sincronização da planilha
+
+A aba `Andamentos` é sincronizada com o PostgreSQL sem excluir fisicamente
+cadastros. Linhas removidas são marcadas como inativas e podem ser reativadas.
+Cada linha recebe um UUID na coluna `ID REGISTRO SISTEMA`.
+
+O diagnóstico é somente leitura:
+
+```powershell
+npm.cmd run sync:diagnostico
+```
+
+Depois de aplicar a migração 004 e conferir o diagnóstico:
+
+```powershell
+npm.cmd run sync:aplicar
+```
+
+Um registro só é elegível para consulta quando está ativo na planilha, não é
+duplicata, possui código e ainda não foi finalizado.
 
 ## EasyPanel
 

@@ -683,6 +683,16 @@ function parsePortalDate(value) {
   return match ? `${match[3]}-${match[2]}-${match[1]}` : null;
 }
 
+function isFinalProcess(status, position, total) {
+  const normalized = String(status ?? "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .trim()
+    .toLowerCase();
+  return (Number.isInteger(position) && Number.isInteger(total) && total > 0 && position === total)
+    || ["concluido", "terminado", "encerrado", "finalizado"].includes(normalized);
+}
+
 function classifyError(error) {
   const message = String(error?.message ?? error ?? "Erro desconhecido");
   const firstLine = message.split(/\r?\n/, 1)[0].trim();
@@ -748,7 +758,12 @@ export async function openPostgresStorage(config) {
   }
 
   const params = [];
-  const filters = ["nullif(btrim(codigo_consulta), '') IS NOT NULL"];
+  const filters = [
+    "nullif(btrim(codigo_consulta), '') IS NOT NULL",
+    "ativo_na_planilha",
+    "NOT registro_duplicado",
+    "NOT processo_finalizado"
+  ];
 
   if (config.modo_teste) {
     params.push(String(config.id_registro_teste).trim());
@@ -792,6 +807,9 @@ export async function openPostgresStorage(config) {
       SELECT id, id_registro
         FROM public.nacionalidade_portuguesa
        WHERE btrim(codigo_consulta) = $1
+         AND ativo_na_planilha
+         AND NOT registro_duplicado
+         AND NOT processo_finalizado
          ${relatedTestFilter}
        ORDER BY id
     `, relatedParams);
@@ -839,6 +857,7 @@ export async function openPostgresStorage(config) {
         ? String(result.hasNotification).toUpperCase() === "SIM"
         : null;
       const consultedAt = result?.consultedAt ?? new Date().toISOString();
+      const processFinished = Boolean(result) && isFinalProcess(result.status, position, total);
       const client = await pool.connect();
 
       try {
@@ -870,10 +889,19 @@ export async function openPostgresStorage(config) {
                      data_ultima_tentativa = $8,
                      status_ultima_tentativa = 'sucesso',
                      erro_ultima_tentativa = NULL,
+                     processo_finalizado = $10,
+                     processo_finalizado_em = CASE
+                       WHEN $10 THEN coalesce(processo_finalizado_em, $8::timestamptz)
+                       ELSE processo_finalizado_em
+                     END,
+                     motivo_finalizacao = CASE
+                       WHEN $10 THEN 'portal:' || $2
+                       ELSE motivo_finalizacao
+                     END,
                      atualizado_em = now()
                WHERE id = $1
             `, [record.id, result.status, position, total, parsePortalDate(result.phaseDate),
-              hasNotification, titles, consultedAt, observacao]);
+              hasNotification, titles, consultedAt, observacao, processFinished]);
           } else {
             await client.query(`
               UPDATE public.nacionalidade_portuguesa

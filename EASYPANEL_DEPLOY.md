@@ -29,6 +29,7 @@ Cadastrar como segredos no EasyPanel:
 ```env
 DATABASE_URL=postgresql://USUARIO:SENHA@HOST:PORTA/BANCO
 TWOCAPTCHA_API_KEY=...
+GOOGLE_SERVICE_ACCOUNT_JSON=...
 ```
 
 Cadastrar como configuração:
@@ -40,6 +41,11 @@ AGENDADOR_MINUTO=0
 EXECUTAR_AO_INICIAR=true
 POSTGRES_CICLO_DIAS=15
 POSTGRES_LIMITE=1000
+GOOGLE_SHEET_ID=10YNu_c-TGiSpb2QwfWDdQgQYuvXYXqwreCmxRETamFs
+GOOGLE_SHEET_NAME=Andamentos
+SINCRONIZACAO_ATIVA=true
+SINCRONIZACAO_INTERVALO_MINUTOS=10
+SINCRONIZAR_AO_INICIAR=true
 ```
 
 `EXECUTAR_AO_INICIAR=true` faz uma verificação no deploy ou reinício. Isso não força um novo ciclo: se os 15 dias ainda não venceram, o banco encerra a verificação sem processar registros.
