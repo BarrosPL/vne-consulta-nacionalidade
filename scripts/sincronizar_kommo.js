@@ -205,6 +205,7 @@ async function loadCandidates(pool) {
            n.status AS status_manual, n.anotacoes, n.fase_consulta_automatica,
            n.posicao_fase, n.total_fases, n.data_fase, n.possui_notificacao,
            n.titulos_notificacoes, n.data_ultima_consulta, n.processo_finalizado,
+           n.kommo_pendente_desde, n.motivo_pendencia_kommo, n.kommo_versao,
            s.crm_lead_id, s.crm_nota_status_id, s.conteudo_nota_hash,
            s.status_id_sincronizado, s.sincronizado_em,
            s.sincronizacao_final_concluida
@@ -212,16 +213,10 @@ async function loadCandidates(pool) {
       LEFT JOIN public.sincronizacao_crm_nacionalidade s ON s.nacionalidade_id=n.id
      WHERE n.ativo_na_planilha
        AND NOT n.registro_duplicado
+       AND n.kommo_pendente
        AND ($2::bigint IS NULL OR n.id=$2)
-       AND (
-         s.nacionalidade_id IS NULL
-         OR s.crm_lead_id IS NULL
-         OR n.data_ultima_consulta > coalesce(s.sincronizado_em, '-infinity'::timestamptz)
-         OR n.atualizado_em > coalesce(s.sincronizado_em, '-infinity'::timestamptz)
-         OR s.crm_nota_status_id IS NULL
-       )
        AND (NOT n.processo_finalizado OR NOT coalesce(s.sincronizacao_final_concluida, false))
-     ORDER BY n.processo_finalizado DESC, n.data_ultima_consulta NULLS FIRST, n.id
+     ORDER BY n.processo_finalizado DESC, n.kommo_pendente_desde NULLS FIRST, n.id
      LIMIT $1
   `, [LIMIT, TEST_NACIONALIDADE_ID]);
   return result.rows;
@@ -263,9 +258,13 @@ async function saveSuccess(pool, record, data) {
     ]);
     await client.query(`
       UPDATE public.nacionalidade_portuguesa
-         SET esta_no_kommo='SIM', atualizado_em=now()
+         SET esta_no_kommo='SIM',
+             kommo_pendente=false,
+             kommo_pendente_desde=NULL,
+             motivo_pendencia_kommo=NULL
        WHERE id=$1
-    `, [record.nacionalidade_id]);
+         AND kommo_versao=$2
+    `, [record.nacionalidade_id, record.kommo_versao]);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -333,7 +332,15 @@ if (!lock.rows[0]?.acquired) {
   await pool.end();
   throw new Error("Já existe uma sincronização Kommo em andamento.");
 }
-const summary = { selecionados: 0, encontrados: 0, criados: 0, ambiguos: 0, erros: 0 };
+const summary = {
+  selecionados: 0,
+  encontrados: 0,
+  criados: 0,
+  movidos: 0,
+  ja_na_etapa_correta: 0,
+  ambiguos: 0,
+  erros: 0
+};
 const sheetUpdates = [];
 try {
   const candidates = await loadCandidates(pool);
@@ -359,14 +366,30 @@ try {
       } else {
         summary.encontrados++;
       }
+      const needsMove = Boolean(lead)
+        && !created
+        && (
+          Number(lead.status_id) !== target.id
+          || Number(lead.pipeline_id) !== PIPELINE_ID
+        );
       if (!APPLY) {
         if (created) summary.criados++;
-        console.log(`[diagnostico] ${record.nacionalidade_id}: ${lead ? "encontrado" : "seria_criado"} → ${target.reason}`);
+        if (needsMove) summary.movidos++;
+        else if (!created) summary.ja_na_etapa_correta++;
+        const action = created
+          ? "seria_criado"
+          : needsMove
+            ? "seria_movido"
+            : "ja_na_etapa_correta";
+        console.log(`[diagnostico] ${record.nacionalidade_id}: ${action} → ${target.reason}`);
         continue;
       }
       if (created) summary.criados++;
-      if (Number(lead.status_id) !== target.id || Number(lead.pipeline_id) !== PIPELINE_ID) {
+      if (needsMove) {
         await moveLead(lead.id, target);
+        summary.movidos++;
+      } else if (!created) {
+        summary.ja_na_etapa_correta++;
       }
       const content = noteContent(record, target);
       const noteHash = createHash("sha256").update(content).digest("hex");

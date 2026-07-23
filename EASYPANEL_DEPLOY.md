@@ -61,6 +61,16 @@ KOMMO_INTERVALO_MINUTOS=15
 KOMMO_SINCRONIZAR_AO_INICIAR=false
 ```
 
+Após publicar a versão que contém a fila explícita do Kommo, aplique uma vez:
+
+```bash
+npm run db:migrate:kommo-queue
+```
+
+Essa migração coloca os processos ativos e principais na fila inicial. O
+agendador consumirá a fila em lotes definidos por
+`KOMMO_LIMITE_POR_EXECUCAO`.
+
 `EXECUTAR_AO_INICIAR=true` faz uma verificação no deploy ou reinício. Isso não força um novo ciclo: se os 15 dias ainda não venceram, o banco encerra a verificação sem processar registros.
 
 Não cadastrar `CAPSOLVER_API_KEY`, pois o projeto usa exclusivamente 2Captcha.

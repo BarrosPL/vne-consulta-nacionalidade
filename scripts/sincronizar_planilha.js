@@ -297,7 +297,20 @@ async function applyDatabase(pool, prepared) {
                    ELSE motivo_finalizacao
                  END,
                  ativo_na_planilha=true, removido_da_planilha_em=NULL,
-                 sincronizado_planilha_em=now(), atualizado_em=now()
+                 sincronizado_planilha_em=now(),
+                 atualizado_em=CASE
+                   WHEN ROW(
+                     id_planilha::text, cliente, esta_no_kommo, numero_processo,
+                     codigo_consulta, data_entrada, parceria, status::text,
+                     conservatoria, aprovado, prazo, data_submissao, anotacoes,
+                     contato, email, google_drive, ativo_na_planilha
+                   ) IS DISTINCT FROM ROW(
+                     $2::text, $3, $4, $5, $6, $7, $8, $9::text, $10, $11,
+                     $12, $13, $14, $15, $16, $17, true
+                   )
+                   THEN now()
+                   ELSE atualizado_em
+                 END
            WHERE id=$1
         `, [row.existing.id, ...values]);
       } else {
@@ -321,8 +334,7 @@ async function applyDatabase(pool, prepared) {
     await client.query(`
       UPDATE public.nacionalidade_portuguesa
          SET ativo_na_planilha=false, removido_da_planilha_em=coalesce(removido_da_planilha_em, now()),
-             motivo_desativacao=coalesce(motivo_desativacao, 'removido_da_planilha'),
-             atualizado_em=now()
+             motivo_desativacao=coalesce(motivo_desativacao, 'removido_da_planilha')
        WHERE ativo_na_planilha
          AND NOT (id_planilha = ANY($1::uuid[]))
     `, [ids]);

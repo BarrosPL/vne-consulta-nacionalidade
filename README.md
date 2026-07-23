@@ -81,6 +81,7 @@ para a etapa correspondente e mantém uma única nota de status:
 
 ```powershell
 npm.cmd run db:migrate:kommo
+npm.cmd run db:migrate:kommo-queue
 npm.cmd run kommo:aplicar
 ```
 
