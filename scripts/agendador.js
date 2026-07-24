@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-const hour = Number(process.env.AGENDADOR_HORA ?? 2);
+const hour = Number(process.env.AGENDADOR_HORA ?? 8);
 const minute = Number(process.env.AGENDADOR_MINUTO ?? 0);
 const runOnStart = String(process.env.EXECUTAR_AO_INICIAR ?? "false").toLowerCase() === "true";
 const validateOnly = String(process.env.AGENDADOR_APENAS_VALIDAR ?? "false").toLowerCase() === "true";

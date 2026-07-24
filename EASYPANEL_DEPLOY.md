@@ -36,7 +36,7 @@ Cadastrar como configuração:
 
 ```env
 TZ=America/Sao_Paulo
-AGENDADOR_HORA=2
+AGENDADOR_HORA=8
 AGENDADOR_MINUTO=0
 EXECUTAR_AO_INICIAR=true
 POSTGRES_CICLO_DIAS=15
@@ -59,6 +59,18 @@ KOMMO_STATUS_RISCO_INDEFERIMENTO=105756056
 KOMMO_SINCRONIZACAO_ATIVA=false
 KOMMO_INTERVALO_MINUTOS=15
 KOMMO_REQUISICOES_POR_SEGUNDO=4
+KOMMO_SALESBOT_LEMBRETE_DIAS=30
+KOMMO_SALESBOT_LIMITE_POR_EXECUCAO=100
+KOMMO_SALESBOT_FASE_1=62867
+KOMMO_SALESBOT_LEMBRETE_FASE_1=62869
+KOMMO_SALESBOT_FASE_2=62929
+KOMMO_SALESBOT_LEMBRETE_FASE_2=62931
+KOMMO_SALESBOT_FASE_3=62871
+KOMMO_SALESBOT_LEMBRETE_FASE_3=62873
+KOMMO_SALESBOT_FASE_4=62875
+KOMMO_SALESBOT_EXIGENCIA=
+KOMMO_SALESBOT_LEMBRETE_EXIGENCIA=
+KOMMO_SALESBOT_FUSO=America/Sao_Paulo
 KOMMO_SINCRONIZAR_AO_INICIAR=false
 ```
 
@@ -66,7 +78,26 @@ Após publicar a versão que contém a fila explícita do Kommo, aplique uma vez
 
 ```bash
 npm run db:migrate:kommo-queue
+npm run db:migrate:salesbots
+npm run db:migrate:salesbot-window
 ```
+
+A migração de Salesbots registra a entrada em cada etapa e o histórico
+idempotente dos disparos. Os lembretes usam ciclos de 30 dias, mesmo que o nome
+de algum bot no Kommo ainda mencione 20 dias. `Risco de Indeferimento` nunca
+aciona Salesbot.
+
+`KOMMO_SALESBOT_EXIGENCIA` é opcional e aciona o bot quando o processo entra
+em Exigência. `KOMMO_SALESBOT_LEMBRETE_EXIGENCIA` também é opcional; quando
+preenchido, usa os mesmos ciclos de 30 dias. Variáveis vazias desabilitam esses
+disparos.
+
+As consultas processuais começam diariamente às `08:00`. Movimentações e
+notas da Kommo podem ocorrer a qualquer hora, mas os Salesbots somente são
+enviados de segunda a sexta, das `09:00` até antes das `18:00`, no fuso
+`America/Sao_Paulo`. Fora da janela, o disparo fica persistido para as `09:00`
+do próximo dia útil. Se a etapa mudar antes do envio, a mensagem antiga é
+cancelada.
 
 Essa migração coloca os processos ativos e principais na fila inicial. O
 agendador consumirá a fila em lotes definidos por

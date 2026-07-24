@@ -24,6 +24,10 @@ Consulta ao portal português
 PostgreSQL atualizado
     ↓
 Sincronização com o Kommo
+    ↓
+Movimentação + nota
+    ↓
+Salesbot imediato ou agendado
 ```
 
 O processo que mantém tudo em execução no EasyPanel é
@@ -50,7 +54,7 @@ Rotinas controladas:
 | Rotina | Configuração padrão | Execução imediata |
 |---|---:|---|
 | Planilha → banco | A cada 10 minutos | `SINCRONIZAR_AO_INICIAR` |
-| Consulta no portal | Diariamente às 02:00 | `EXECUTAR_AO_INICIAR` |
+| Consulta no portal | Diariamente às 08:00 | `EXECUTAR_AO_INICIAR` |
 | Banco → Kommo | A cada 15 minutos | `KOMMO_SINCRONIZAR_AO_INICIAR` |
 
 As três rotinas são independentes. No início do contêiner elas podem executar
@@ -226,10 +230,10 @@ Mapeamento de etapas:
 
 | Condição do processo | Etapa de destino |
 |---|---|
-| Ainda sem resultado | Iniciar consulta |
-| Fase 1 | Fase 1 |
-| Fase 2 | Fase 2 |
-| Fase 3 | Fase 3 |
+| Lead novo, sem fase confiável | Iniciar consulta |
+| Fase manual ou automática 1 | Fase 1 |
+| Fase manual ou automática 2 | Fase 2 |
+| Fase manual ou automática 3 | Fase 3 |
 | Fase 4 ou fase 5 | Fase 4 |
 | Processo finalizado | Fase 4 |
 | Indicação de exigência | Exigência |
@@ -241,9 +245,16 @@ notificações. Risco de indeferimento tem prioridade sobre exigência.
 Antes de movimentar:
 
 - O sistema lê o `status_id` atual do lead.
-- Calcula o `status_id` esperado com base no resultado da consulta.
+- Calcula o `status_id` esperado usando, nesta ordem: finalização, situações
+  especiais, fase automática e fase manual.
+- Sem fase confiável, preserva a etapa atual de um lead existente.
+- Bloqueia regressões automáticas entre Iniciar Consulta e as Fases 1 a 4.
+- Nunca reabre automaticamente os status encerrados `142` e `143`.
+- Preserva Exigência e Risco de Indeferimento até existir evidência especial
+  ou de finalização.
 - Se os IDs forem iguais, não envia uma atualização de etapa ao Kommo.
 - Se forem diferentes, movimenta o lead e contabiliza a ação como `movidos`.
+- Movimentos bloqueados são contabilizados como `movimentacoes_bloqueadas`.
 - O resumo contabiliza separadamente `ja_na_etapa_correta`.
 - Leads novos já são criados diretamente na etapa calculada e não recebem uma
   segunda movimentação redundante.
@@ -277,6 +288,70 @@ Limite:
 Ao final de cada lote, o módulo imprime
 `RELATORIO_AUDITORIA_KOMMO`, contendo resumo e detalhes por cliente: destino,
 ação, lead, nota, atualização da nota ou erro.
+
+### 2.5. Salesbots, lembretes e janela de envio
+
+Implementação principal: `scripts/sincronizar_kommo.js`
+
+Funções de horário: `scripts/lib/janela_salesbot.js`
+
+Persistência: `public.disparos_salesbot_nacionalidade`
+
+Bots configurados:
+
+| Situação | Bot de entrada | Bot de lembrete |
+|---|---:|---:|
+| Fase 1 | `62867` | `62869` |
+| Fase 2 | `62929` | `62931` |
+| Fase 3 | `62871` | `62873` |
+| Fase 4/conclusão | `62875` | Não existe |
+| Exigência | `KOMMO_SALESBOT_EXIGENCIA` | `KOMMO_SALESBOT_LEMBRETE_EXIGENCIA` |
+| Risco de indeferimento | Nunca envia | Nunca envia |
+
+Regras de mudança:
+
+- O bot de entrada é associado à nova etapa confirmada.
+- Leads criados diretamente em uma etapa durante a carga inicial não recebem
+  uma mensagem de mudança retroativa.
+- Uma etapa apenas preservada não gera mensagem.
+- Risco de indeferimento recebe movimentação e nota, mas nenhuma comunicação.
+- IDs opcionais de Exigência vazios desabilitam os respectivos disparos.
+
+Regras de lembrete:
+
+- O primeiro lembrete vence 30 dias após `etapa_entrou_em`.
+- Permanecendo na mesma etapa, novos ciclos vencem em 60, 90, 120 dias e assim
+  sucessivamente.
+- A mudança de etapa reinicia a contagem.
+- A chave de idempotência impede o mesmo ciclo de ser enviado duas vezes.
+- Fases 1, 2 e 3 têm lembrete configurado.
+- Fase 4 não tem lembrete.
+- Exigência só tem lembrete quando o ID opcional estiver configurado.
+
+Janela de comunicação:
+
+- Segunda a sexta-feira.
+- Das `09:00` inclusive até antes das `18:00`.
+- Fuso `America/Sao_Paulo`, configurável por `KOMMO_SALESBOT_FUSO`.
+- Fora da janela, movimentação e nota são concluídas normalmente.
+- A mensagem recebe `status_disparo='agendado'` e `disparar_apos` apontando
+  para as `09:00` do próximo dia útil.
+- O envio ocorre na primeira execução Kommo elegível a partir desse horário.
+- Se o lead mudar de etapa antes do envio, a mensagem antiga recebe
+  `status_disparo='cancelado'`.
+
+Estados de um disparo:
+
+| Estado | Significado |
+|---|---|
+| `agendado` | Aguardando a próxima janela comercial |
+| `processando` | Reservado pela execução atual |
+| `sucesso` | A API Kommo aceitou o disparo |
+| `erro` | O disparo falhou e pode ser repetido |
+| `cancelado` | A etapa mudou ou o cadastro ficou inelegível antes do envio |
+
+Uma resposta HTTP `202` significa que a Kommo aceitou a tarefa do bot. O
+histórico guarda bot, lead, etapa, tipo, ciclo, tentativas, HTTP, erro e datas.
 
 ## 3. Módulos auxiliares
 
@@ -371,6 +446,68 @@ O limite pode ser substituído por `TESTE_FLUXO_LIMITE`, entre 1 e 50. A
 sincronização da planilha continua integral porque ela precisa detectar
 inclusões e exclusões; o limite se aplica às consultas e ao Kommo.
 
+### 3.7. Teste direto de Salesbot
+
+Arquivo: `scripts/testar_salesbot.js`
+
+Valida a existência de um lead e permite acionar um bot específico de maneira
+controlada:
+
+```bash
+node scripts/testar_salesbot.js BOT_ID LEAD_ID
+node scripts/testar_salesbot.js BOT_ID LEAD_ID --aplicar
+```
+
+Sem `--aplicar`, apenas valida o lead. Com `--aplicar`, chama
+`POST /api/v4/bots/{id}/run`.
+
+### 3.8. Teste da janela de Salesbots
+
+Arquivos:
+
+- `scripts/testar_janela_salesbot.js`;
+- `scripts/lib/janela_salesbot.js`.
+
+Comando:
+
+```bash
+npm run teste:janela-salesbot
+```
+
+Valida os limites de 09:00, 18:00, dias úteis e a passagem de sexta-feira para
+segunda-feira.
+
+### 3.9. Diagnóstico de movimentação Kommo
+
+Arquivo: `scripts/diagnosticar_movimentacao_kommo.js`
+
+Recebe o ID interno de `nacionalidade_portuguesa`, consulta o banco em
+transação somente leitura e compara o cadastro com o lead encontrado na Kommo:
+
+```bash
+node scripts/diagnosticar_movimentacao_kommo.js ID_INTERNO
+```
+
+É usado para explicar por que um lead seria ou não movimentado.
+
+### 3.10. Diagnóstico de partida
+
+Arquivo: `scripts/diagnosticar_partida.js`
+
+Consulta somente o PostgreSQL e informa:
+
+- total de pendências Kommo;
+- processos elegíveis e códigos distintos;
+- lembretes vencidos;
+- falhas e disparos em processamento;
+- último ciclo de consulta.
+
+Comando:
+
+```bash
+node scripts/diagnosticar_partida.js
+```
+
 ## 4. Configuração
 
 ### 4.1. `config.json`
@@ -402,6 +539,22 @@ Grupos principais:
 - Consulta: `AGENDADOR_*`, `POSTGRES_*` e `EXECUTAR_AO_INICIAR`.
 - Planilha: `SINCRONIZACAO_*`.
 - Kommo: `KOMMO_*`.
+
+Variáveis operacionais mais importantes:
+
+| Variável | Função |
+|---|---|
+| `AGENDADOR_HORA=8` | Hora diária da verificação do ciclo processual |
+| `AGENDADOR_MINUTO=0` | Minuto da verificação |
+| `POSTGRES_CICLO_DIAS=15` | Intervalo global entre ciclos concluídos |
+| `SINCRONIZACAO_INTERVALO_MINUTOS=10` | Frequência planilha → banco |
+| `KOMMO_INTERVALO_MINUTOS=15` | Frequência banco → Kommo e Salesbots |
+| `KOMMO_LIMITE_POR_EXECUCAO=30` | Quantidade de pendências por lote |
+| `KOMMO_SALESBOT_LEMBRETE_DIAS=30` | Tamanho de cada ciclo de lembrete |
+| `KOMMO_SALESBOT_LIMITE_POR_EXECUCAO=100` | Limite de bots por execução |
+| `KOMMO_SALESBOT_FUSO` | Fuso usado para a janela de mensagens |
+| `KOMMO_SALESBOT_EXIGENCIA` | Bot opcional de entrada em Exigência |
+| `KOMMO_SALESBOT_LEMBRETE_EXIGENCIA` | Bot opcional de lembrete de Exigência |
 
 O conteúdo de tokens, senhas e chaves privadas nunca deve aparecer em logs ou
 documentação.
@@ -448,6 +601,33 @@ Cria a fila explícita do Kommo e o gatilho que registra inclusões, reativaçõ
 alterações relevantes, resultados de consulta e finalizações. A baixa da fila
 é protegida contra atualizações concorrentes.
 
+### `007_salesbots_kommo.sql`
+
+Adiciona `etapa_entrou_em` e `salesbot_ultimo_disparo_em` ao controle CRM.
+Cria `public.disparos_salesbot_nacionalidade`, com chave de idempotência,
+tipo de mensagem, ciclo de lembrete, bot, lead, etapa, tentativas e resultado.
+
+### `008_janela_horario_salesbots.sql`
+
+Adiciona `disparar_apos`, os estados `agendado` e `cancelado` e um índice
+parcial para localizar rapidamente mensagens que chegaram ao horário de envio.
+
+Ordem de aplicação em um banco novo:
+
+```bash
+npm run db:migrate
+npm run db:migrate:cycles
+npm run db:migrate:attempts
+npm run db:migrate:sync
+npm run db:migrate:kommo
+npm run db:migrate:kommo-queue
+npm run db:migrate:salesbots
+npm run db:migrate:salesbot-window
+```
+
+As migrações usam `IF NOT EXISTS` onde aplicável, mas devem ser executadas na
+ordem numérica porque as posteriores dependem das tabelas e colunas anteriores.
+
 ## 6. Implantação
 
 ### Docker
@@ -490,7 +670,7 @@ SINCRONIZACAO_INTERVALO_MINUTOS=10
 SINCRONIZAR_AO_INICIAR=true
 
 EXECUTAR_AO_INICIAR=true
-AGENDADOR_HORA=2
+AGENDADOR_HORA=8
 AGENDADOR_MINUTO=0
 POSTGRES_CICLO_DIAS=15
 POSTGRES_LIMITE=1000
@@ -500,6 +680,18 @@ KOMMO_INTERVALO_MINUTOS=15
 KOMMO_SINCRONIZAR_AO_INICIAR=true
 KOMMO_LIMITE_POR_EXECUCAO=30
 KOMMO_REQUISICOES_POR_SEGUNDO=4
+KOMMO_SALESBOT_LEMBRETE_DIAS=30
+KOMMO_SALESBOT_LIMITE_POR_EXECUCAO=100
+KOMMO_SALESBOT_FUSO=America/Sao_Paulo
+KOMMO_SALESBOT_FASE_1=62867
+KOMMO_SALESBOT_LEMBRETE_FASE_1=62869
+KOMMO_SALESBOT_FASE_2=62929
+KOMMO_SALESBOT_LEMBRETE_FASE_2=62931
+KOMMO_SALESBOT_FASE_3=62871
+KOMMO_SALESBOT_LEMBRETE_FASE_3=62873
+KOMMO_SALESBOT_FASE_4=62875
+KOMMO_SALESBOT_EXIGENCIA=
+KOMMO_SALESBOT_LEMBRETE_EXIGENCIA=
 ```
 
 Sequência efetiva:
@@ -511,6 +703,7 @@ Planilha sincroniza com o PostgreSQL
 → o Kommo consome as pendências em lotes
 → a etapa só muda quando o status_id atual é diferente
 → a nota é criada ou atualizada
+→ o Salesbot é enviado ou agendado conforme a janela comercial
 → o sucesso encerra a pendência correspondente
 ```
 
@@ -537,7 +730,8 @@ Os logs são uma visualização operacional. A fonte persistente de auditoria é
 
 - `public.historico_consultas_nacionalidade`;
 - `public.ciclos_consulta_nacionalidade`;
-- `public.sincronizacao_crm_nacionalidade`.
+- `public.sincronizacao_crm_nacionalidade`;
+- `public.disparos_salesbot_nacionalidade`.
 
 ### Estado inicial da entrada em produção
 
@@ -565,10 +759,13 @@ recorrente do sistema.
 | `npm run kommo:diagnostico` | Analisa banco → Kommo sem alterar |
 | `npm run kommo:aplicar` | Aplica banco → Kommo |
 | `npm run teste:fluxo:10` | Testa o fluxo completo com até 10 pessoas |
+| `npm run teste:janela-salesbot` | Testa os limites da janela de mensagens |
 | `npm run db:map` | Mapeia a estrutura do banco |
 | `npm run db:inspect` | Inspeciona os dados de nacionalidade |
 | `npm run db:validate` | Valida a integração PostgreSQL |
 | `npm run test:real` | Executa um teste real controlado |
+| `npm run db:migrate:salesbots` | Aplica persistência dos Salesbots |
+| `npm run db:migrate:salesbot-window` | Aplica a fila de horário comercial |
 
 ## 8. Resumo das regras de negócio
 
@@ -595,4 +792,262 @@ Um processo finalizado:
 deixa de ser consultado
 + recebe a última atualização no Kommo
 + deixa de ser sincronizado após a confirmação final
+```
+
+## 9. Mapa técnico de arquivos e funções
+
+Esta seção indica onde cada responsabilidade está implementada. Funções
+auxiliares pequenas também estão listadas para facilitar manutenção e busca no
+código.
+
+### 9.1. `scripts/agendador.js`
+
+| Função | Responsabilidade |
+|---|---|
+| `nextExecution` | Calcula a próxima verificação diária, padrão 08:00 |
+| `schedule` | Agenda a próxima execução do portal |
+| `execute` | Inicia `consulta_status.js` com controle de ciclo e modo real |
+| `executeSync` | Inicia planilha → PostgreSQL com `--aplicar` |
+| `scheduleSync` | Mantém o intervalo da planilha, padrão 10 minutos |
+| `executeKommo` | Inicia banco → Kommo com `--aplicar` |
+| `scheduleKommo` | Mantém o intervalo Kommo, padrão 15 minutos |
+| `shutdown` | Encerra timers e processos filhos ao receber sinal |
+
+O arquivo também mantém referências aos processos filhos para impedir duas
+execuções locais simultâneas de cada rotina.
+
+### 9.2. `scripts/sincronizar_planilha.js`
+
+| Função | Responsabilidade |
+|---|---|
+| `text` | Converte valores da planilha em texto seguro |
+| `normalizeHeader` | Normaliza nomes de colunas |
+| `parseDate` | Converte datas da planilha |
+| `columnLetter` | Converte índice em letra de coluna |
+| `legacyId` | Obtém identificadores antigos quando existirem |
+| `normalizedText` | Normaliza textos usados em comparação |
+| `dateKey` | Uniformiza datas para detectar mudanças |
+| `sourceDataChanged` | Decide se os dados de origem realmente mudaram |
+| `isManualFinalStatus` | Reconhece status manuais terminais |
+| `addCandidate` | Agrupa possíveis correspondências de uma linha |
+| `openSheet` | Autentica e lê a planilha Google |
+| `mapRows` | Transforma linhas em objetos do domínio |
+| `loadDatabase` | Carrega cadastros e estados atuais do PostgreSQL |
+| `analyze` | Calcula inclusões, alterações, reativações e desativações |
+| `writeIds` | Grava UUIDs ausentes na planilha |
+| `applyDatabase` | Aplica as mudanças calculadas em transação |
+
+### 9.3. `consulta_status.js`
+
+Captcha e navegação:
+
+| Função | Responsabilidade |
+|---|---|
+| `extractHCaptchaSitekey` | Localiza a sitekey do hCaptcha |
+| `hasHCaptcha` | Detecta se o desafio está presente |
+| `injectHCaptchaToken` | Injeta o token resolvido na página |
+| `solveWithCapSolver` | Implementação legada de provedor alternativo |
+| `post2Captcha` | Executa chamadas HTTP ao 2Captcha |
+| `solveWith2Captcha` | Cria e acompanha uma tarefa do 2Captcha |
+| `solveHCaptcha` | Orquestra a resolução automática |
+| `handleCaptcha` | Decide entre resolução automática e intervenção manual |
+| `firstVisible` | Retorna o primeiro seletor visível |
+| `fillCode` | Preenche o código de consulta |
+| `clickConsultar` | Aciona a consulta no portal |
+| `waitForManualCaptcha` | Aguarda confirmação manual quando configurado |
+| `consultarStatus` | Executa uma tentativa completa no portal |
+| `consultarComTentativas` | Repete a consulta conforme a política de erros |
+
+Configuração, planilhas e utilitários:
+
+| Função | Responsabilidade |
+|---|---|
+| `loadConfig` | Combina `config.json` com variáveis de ambiente |
+| `normalizeHeader` | Normaliza cabeçalhos |
+| `cellText` | Extrai texto de uma célula local |
+| `readHeaders` | Lê cabeçalhos do Excel |
+| `requireColumn` | Exige uma coluna obrigatória |
+| `ensureColumn` | Cria uma coluna local ausente |
+| `columnToLetter` | Converte posição em letra |
+| `escapeSheetName` | Escapa nome de aba |
+| `googleRange` | Monta intervalos A1 do Google Sheets |
+| `googleCellText` | Normaliza valores retornados pelo Google |
+| `maskCode` | Mascara códigos nos logs |
+| `withTimeout` | Aplica tempo máximo a uma promessa |
+| `readGoogleHeaders` | Lê cabeçalhos retornados pela API Google |
+| `outputColumnDefinitions` | Define colunas de saída da consulta |
+| `createGoogleSheetsClient` | Cria cliente autenticado do Google |
+| `openLocalExcelSpreadsheet` | Abre armazenamento Excel local |
+| `ensureGoogleColumn` | Cria uma coluna ausente no Google Sheets |
+| `openGoogleSheetsSpreadsheet` | Abre o adaptador Google Sheets |
+| `openSpreadsheet` | Seleciona o adaptador de armazenamento |
+
+Domínio e persistência:
+
+| Função | Responsabilidade |
+|---|---|
+| `parsePhasePosition` | Extrai a posição numérica da fase |
+| `parsePortalDate` | Converte datas retornadas pelo portal |
+| `isFinalProcess` | Decide se o processo chegou ao estado final |
+| `classifyError` | Classifica falhas para histórico e retentativa |
+| `openPostgresStorage` | Seleciona elegíveis, controla ciclos e persiste resultados |
+| `extractProcessData` | Extrai fase, data, posição e notificações da página |
+| `main` | Inicializa navegador, percorre registros e emite a auditoria |
+
+### 9.4. `scripts/sincronizar_kommo.js`
+
+Decisão de etapa e conteúdo:
+
+| Função | Responsabilidade |
+|---|---|
+| `optionalPositiveInteger` | Valida IDs opcionais de bot |
+| `text` | Converte valores em texto |
+| `normalize` | Normaliza texto para comparação |
+| `positiveMention` | Detecta termos positivos ignorando negações conhecidas |
+| `manualPhaseTarget` | Mapeia Fases 1 a 3 e Iniciar Consulta do status manual |
+| `targetCandidate` | Calcula o destino usando prioridades de negócio |
+| `preservedTarget` | Representa uma etapa Kommo que deve ser mantida |
+| `resolveTarget` | Aplica proteções contra regressão, reabertura e dados vazios |
+| `formatDate` | Formata datas no fuso de São Paulo |
+| `noteContent` | Monta a nota controlada pelo sistema |
+
+Comunicação com a Kommo:
+
+| Função | Responsabilidade |
+|---|---|
+| `waitForKommoRateLimit` | Respeita o limite global de chamadas |
+| `retryAfterMs` | Calcula espera para HTTP 429 e erros temporários |
+| `kommoRequest` | Cliente HTTP comum com autenticação e retentativas |
+| `findLeadByName` | Busca nome exato normalizado no funil configurado |
+| `validateStoredLead` | Valida o lead previamente vinculado |
+| `createLead` | Cria um lead na etapa calculada |
+| `moveLead` | Atualiza funil e etapa |
+| `upsertNote` | Cria ou atualiza a nota controlada |
+| `markKommoInSheet` | Marca `ESTÁ NO KOMMO?` na planilha |
+
+Salesbots:
+
+| Função | Responsabilidade |
+|---|---|
+| `launchSalesbot` | Chama `POST /api/v4/bots/{id}/run` |
+| `salesbotFor` | Obtém o bot de entrada ou lembrete de uma etapa |
+| `stageKeyDate` | Normaliza a data usada na idempotência |
+| `scheduleSalesbotDispatch` | Persiste um bot fora da janela comercial |
+| `reserveSalesbotDispatch` | Reserva de forma idempotente um disparo |
+| `executeSalesbotDispatch` | Agenda ou executa conforme dia e horário |
+| `dispatchStageChangeSalesbot` | Cria o evento de bot para mudança de fase |
+| `loadDueReminders` | Localiza ciclos de 30 dias ainda não enviados |
+| `processDueReminders` | Processa ou agenda os lembretes vencidos |
+| `processScheduledSalesbots` | Envia agendados e cancela mensagens obsoletas |
+| `processFailedStageChanges` | Repete falhas confirmadas de mudança |
+
+Fila e banco:
+
+| Função | Responsabilidade |
+|---|---|
+| `loadCandidates` | Seleciona o lote de pendências Kommo |
+| `saveSuccess` | Persiste lead, nota, etapa e baixa a versão processada |
+| `saveError` | Registra a falha sem perder a pendência |
+
+O bloco principal do arquivo obtém uma trava consultiva PostgreSQL, percorre o
+lote, executa agendados, falhas e lembretes, atualiza a planilha e libera a
+trava no `finally`.
+
+### 9.5. `scripts/lib/janela_salesbot.js`
+
+| Função | Responsabilidade |
+|---|---|
+| `isSalesbotBusinessHours` | Informa se o momento está entre 09:00 e 18:00 em dia útil |
+| `nextSalesbotBusinessTime` | Calcula 09:00 do mesmo dia ou do próximo dia útil |
+
+### 9.6. Scripts sem API interna
+
+Estes arquivos executam seu trabalho no bloco principal, sem expor funções de
+domínio reutilizáveis:
+
+| Arquivo | Responsabilidade |
+|---|---|
+| `scripts/aplicar_migracao.js` | Executar um arquivo SQL |
+| `scripts/diagnosticar_movimentacao_kommo.js` | Comparar banco e lead |
+| `scripts/diagnosticar_partida.js` | Resumir o estado antes da partida |
+| `scripts/executar_teste_real.js` | Executar uma consulta real isolada |
+| `scripts/inspecionar_nacionalidade.js` | Inspecionar dados e estrutura |
+| `scripts/validar_integracao_postgres.js` | Validar objetos obrigatórios |
+
+Outros auxiliares com função local:
+
+| Arquivo/função | Responsabilidade |
+|---|---|
+| `scripts/mapear_banco.js` / `query` | Consultar metadados do PostgreSQL |
+| `scripts/testar_fluxo_completo.js` / `runNode` | Iniciar subprocessos do teste integrado |
+| `scripts/testar_salesbot.js` / `request` | Fazer chamadas controladas à Kommo |
+| `scripts/testar_janela_salesbot.js` / `localDate` | Criar datas dos testes de fronteira |
+
+## 10. Mapa das tabelas persistentes
+
+| Tabela | Papel |
+|---|---|
+| `public.nacionalidade_portuguesa` | Cadastro central, resultado atual, elegibilidade e fila Kommo |
+| `public.historico_consultas_nacionalidade` | Histórico de tentativas e resultados do portal |
+| `public.ciclos_consulta_nacionalidade` | Execuções globais de consulta a cada 15 dias |
+| `public.sincronizacoes_planilha_nacionalidade` | Auditoria da planilha |
+| `public.sincronizacao_crm_nacionalidade` | Vínculo com lead/nota, etapa e última tentativa CRM |
+| `public.disparos_salesbot_nacionalidade` | Idempotência, agenda e histórico de Salesbots |
+
+Relações principais:
+
+```text
+nacionalidade_portuguesa
+    ├── historico_consultas_nacionalidade
+    ├── sincronizacao_crm_nacionalidade
+    └── disparos_salesbot_nacionalidade
+
+ciclos_consulta_nacionalidade
+    └── historico_consultas_nacionalidade
+```
+
+## 11. Fluxos completos por evento
+
+### Mudança detectada na consulta
+
+```text
+Portal retorna nova fase
+→ consulta_status.js atualiza PostgreSQL
+→ gatilho marca kommo_pendente
+→ sincronizar_kommo.js calcula destino seguro
+→ lead é movimentado
+→ nota é atualizada
+→ Salesbot é enviado ou agendado
+→ evento e sincronização são persistidos
+```
+
+### Permanência por 30 dias
+
+```text
+Rotina Kommo encontra ciclo vencido
+→ confirma que lead continua na mesma etapa
+→ gera chave idempotente para o ciclo
+→ envia na janela comercial ou agenda
+→ registra sucesso, erro ou cancelamento
+```
+
+### Risco de indeferimento
+
+```text
+Texto indica risco
+→ lead vai para Risco de Indeferimento
+→ nota é atualizada
+→ nenhum Salesbot é criado
+→ equipe analisa manualmente
+```
+
+### Mensagem criada fora do horário
+
+```text
+Movimentação ocorre fora de seg-sex 09:00–18:00
+→ Salesbot recebe status agendado
+→ disparar_apos aponta para 09:00 do próximo dia útil
+→ rotina Kommo revisa se a etapa continua válida
+    ├── válida: dispara
+    └── alterada/inativa: cancela
 ```
