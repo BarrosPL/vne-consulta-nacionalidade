@@ -393,6 +393,7 @@ const DEFAULT_CONFIG = {
   captcha_solver_timeout_ms: 180000,
   captcha_poll_interval_ms: 5000,
   captcha_rate_limit_base_ms: 15000,
+  captcha_nova_pagina_delay_ms: 5000,
   consulta_max_tentativas: 2,
   consulta_timeout_total_ms: 660000,
   intervalo_entre_consultas_ms: 5000,
@@ -410,6 +411,9 @@ function loadConfig() {
     : { ...DEFAULT_CONFIG };
   if (process.env.POSTGRES_TEST_RECORD_ID) {
     config.id_registro_teste = process.env.POSTGRES_TEST_RECORD_ID;
+  }
+  if (process.env.POSTGRES_TEST_NACIONALIDADE_ID) {
+    config.nacionalidade_id_teste = Number(process.env.POSTGRES_TEST_NACIONALIDADE_ID);
   }
   if (process.env.POSTGRES_SIMULAR) {
     config.simular = process.env.POSTGRES_SIMULAR.toLowerCase() === "true";
@@ -693,6 +697,18 @@ function isFinalProcess(status, position, total) {
     || ["concluido", "terminado", "encerrado", "finalizado"].includes(normalized);
 }
 
+export function isInactiveProcessMessage(value) {
+  const normalized = String(value ?? "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return normalized.includes(
+    "nao corresponde a nenhum processo de nacionalidade ativo"
+  );
+}
+
 function classifyError(error) {
   const message = String(error?.message ?? error ?? "Erro desconhecido");
   const firstLine = message.split(/\r?\n/, 1)[0].trim();
@@ -704,6 +720,10 @@ function classifyError(error) {
   return { type: "inesperado", message: firstLine };
 }
 
+export function isRetryableConsultationError(type) {
+  return ["timeout", "navegacao", "extracao", "codigo", "captcha"].includes(type);
+}
+
 export async function openPostgresStorage(config) {
   if (!process.env.DATABASE_URL) {
     throw new Error("DATABASE_URL nao definida no .env.");
@@ -713,8 +733,14 @@ export async function openPostgresStorage(config) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
     throw new Error("limite_por_execucao deve ser um inteiro entre 1 e 1000.");
   }
-  if (config.modo_teste && !String(config.id_registro_teste ?? "").trim()) {
-    throw new Error("No modo_teste, defina id_registro_teste no config.json.");
+  const testNacionalidadeId = Number(config.nacionalidade_id_teste);
+  const hasNumericTestId = Number.isSafeInteger(testNacionalidadeId)
+    && testNacionalidadeId > 0;
+  const hasLegacyTestId = Boolean(String(config.id_registro_teste ?? "").trim());
+  if (config.modo_teste && !hasNumericTestId && !hasLegacyTestId) {
+    throw new Error(
+      "No modo_teste, defina nacionalidade_id_teste ou id_registro_teste."
+    );
   }
 
   const pool = new pg.Pool({
@@ -766,8 +792,13 @@ export async function openPostgresStorage(config) {
   ];
 
   if (config.modo_teste) {
-    params.push(String(config.id_registro_teste).trim());
-    filters.push(`id_registro = $${params.length}`);
+    if (hasNumericTestId) {
+      params.push(testNacionalidadeId);
+      filters.push(`id = $${params.length}`);
+    } else {
+      params.push(String(config.id_registro_teste).trim());
+      filters.push(`btrim(id_registro) = btrim($${params.length})`);
+    }
   } else if (useCycleControl) {
     // Um ciclo vencido sempre percorre todos os codigos do banco.
   } else if (config.reconsultar_processados) {
@@ -800,9 +831,17 @@ export async function openPostgresStorage(config) {
   const entries = [];
   for (const { codigo } of selectedCodes.rows) {
     const relatedParams = [codigo];
-    const relatedTestFilter = config.modo_teste
-      ? `AND id_registro = $${relatedParams.push(String(config.id_registro_teste).trim())}`
-      : "";
+    let relatedTestFilter = "";
+    if (config.modo_teste) {
+      if (hasNumericTestId) {
+        relatedTestFilter = `AND id = $${relatedParams.push(testNacionalidadeId)}`;
+      } else {
+        relatedTestFilter =
+          `AND btrim(id_registro) = btrim($${relatedParams.push(
+            String(config.id_registro_teste).trim()
+          )})`;
+      }
+    }
     const related = await pool.query(`
       SELECT id, id_registro
         FROM public.nacionalidade_portuguesa
@@ -895,13 +934,14 @@ export async function openPostgresStorage(config) {
                        ELSE processo_finalizado_em
                      END,
                      motivo_finalizacao = CASE
-                       WHEN $10 THEN 'portal:' || $2
+                       WHEN $10 THEN coalesce($11, 'portal:' || $2)
                        ELSE motivo_finalizacao
                      END,
                      atualizado_em = now()
                WHERE id = $1
             `, [record.id, result.status, position, total, parsePortalDate(result.phaseDate),
-              hasNotification, titles, consultedAt, observacao, processFinished]);
+              hasNotification, titles, consultedAt, observacao, processFinished,
+              result.finalizationReason ?? null]);
           } else {
             await client.query(`
               UPDATE public.nacionalidade_portuguesa
@@ -1008,15 +1048,16 @@ async function openSpreadsheet(config) {
   throw new Error("storage invalido no config.json. Use 'postgres', 'local_excel' ou 'google_sheets'.");
 }
 
-async function firstVisible(page, selectors, timeout = 2500) {
-  for (const selector of selectors) {
-    const locator = page.locator(selector).first();
-    try {
+async function firstVisible(page, selectors, timeout = 15000) {
+  try {
+    return await Promise.any(selectors.map(async (selector) => {
+      const locator = page.locator(selector).first();
       await locator.waitFor({ state: "visible", timeout });
       return locator;
-    } catch { /* tenta o próximo */ }
+    }));
+  } catch {
+    return null;
   }
-  return null;
 }
 
 async function fillCode(page, codigo) {
@@ -1027,7 +1068,13 @@ async function fillCode(page, codigo) {
     "input[aria-label*='codigo' i]",
     "input[type='text']"
   ]);
-  if (!field) throw new Error("Campo do código de consulta não encontrado na página.");
+  if (!field) {
+    const title = await page.title().catch(() => "");
+    throw new Error(
+      `Campo do código de consulta não encontrado na página. `
+      + `URL=${page.url()} | título=${title || "não informado"}`
+    );
+  }
   await field.fill(codigo);
 }
 
@@ -1055,14 +1102,39 @@ async function waitForManualCaptcha(page, rl) {
 
 export async function extractProcessData(page) {
   try {
-    await page.waitForSelector(".wizard-wrapper-item", {
-      state: "attached",
+    await page.waitForFunction(() => {
+      if (document.querySelector(".wizard-wrapper-item")) return true;
+      const normalized = String(document.body?.innerText ?? "")
+        .normalize("NFD")
+        .replace(/\p{Diacritic}/gu, "")
+        .replace(/\s+/g, " ")
+        .toLowerCase();
+      return normalized.includes(
+        "nao corresponde a nenhum processo de nacionalidade ativo"
+      );
+    }, null, {
       timeout: 45000
     });
   } catch {
     throw new Error("Resultado carregou sem apresentar as fases do processo.");
   }
   await page.waitForTimeout(500);
+
+  const pageText = await page.locator("body").innerText().catch(() => "");
+  if (isInactiveProcessMessage(pageText)) {
+    console.log("  [status] Processo encerrado: senha sem processo de nacionalidade ativo.");
+    return {
+      status: "Encerrado",
+      position: "",
+      totalPhases: null,
+      phaseDate: "",
+      hasNotification: "NÃO",
+      notificationTitles: "",
+      finalizationReason: "portal_senha_nao_corresponde_processo_ativo",
+      observation: "Portal informou que a senha não corresponde a processo de nacionalidade ativo.",
+      consultedAt: new Date().toISOString()
+    };
+  }
 
   const result = await page.evaluate(() => {
     const items = document.querySelectorAll(".wizard-wrapper-item");
@@ -1145,7 +1217,7 @@ export async function extractProcessData(page) {
 
 async function consultarStatus(page, codigo, config, rl) {
   await page.goto(config.url_consulta, {
-    waitUntil: "commit",
+    waitUntil: "domcontentloaded",
     timeout:   config.timeout_ms
   });
 
@@ -1175,8 +1247,21 @@ async function consultarComTentativas(browser, codigo, config, rl) {
     } catch (error) {
       lastError = error;
       const classified = classifyError(error);
-      const retryable = ["timeout", "navegacao", "extracao"].includes(classified.type);
+      const retryable = isRetryableConsultationError(classified.type);
       if (!retryable || attempt === maxAttempts) throw error;
+      if (classified.type === "captcha") {
+        const delayMs = Math.max(Number(config.captcha_nova_pagina_delay_ms) || 5000, 0);
+        console.warn(
+          `  [retry] captcha; descartando o desafio atual e aguardando ` +
+          `${Math.round(delayMs / 1000)}s antes de abrir uma nova pagina ` +
+          `(${attempt + 1}/${maxAttempts}).`
+        );
+        await page.close({ runBeforeUnload: false }).catch(() => {});
+        if (delayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+        continue;
+      }
       console.warn(`  [retry] ${classified.type}; nova pagina (${attempt + 1}/${maxAttempts}).`);
     } finally {
       await page.close({ runBeforeUnload: false }).catch(() => {});
@@ -1262,7 +1347,11 @@ const summary = {
       console.log(`\nItem ${rowNumber - 1}: consultando codigo ${maskCode(codigo)}...`);
       try {
         const result = await consultarComTentativas(browser, codigo, config, rl);
-        await spreadsheet.updateRow(rowNumber, result, "Consulta realizada");
+        await spreadsheet.updateRow(
+          rowNumber,
+          result,
+          result.observation ?? "Consulta realizada"
+        );
         console.log(`Linha ${rowNumber}: ${result.status} (${result.position})`);
         summary.sucessos++;
       } catch (error) {

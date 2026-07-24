@@ -10,6 +10,7 @@
   "captcha_solver_timeout_ms": 180000,
   "captcha_poll_interval_ms": 5000,
   "captcha_rate_limit_base_ms": 15000,
+  "captcha_nova_pagina_delay_ms": 5000,
   "consulta_max_tentativas": 2,
   "consulta_timeout_total_ms": 660000,
   "intervalo_entre_consultas_ms": 5000,

@@ -16,6 +16,7 @@
     "db:migrate:kommo-queue": "node scripts/aplicar_migracao.js migrations/006_fila_pendencias_kommo.sql",
     "db:migrate:salesbots": "node scripts/aplicar_migracao.js migrations/007_salesbots_kommo.sql",
     "db:migrate:salesbot-window": "node scripts/aplicar_migracao.js migrations/008_janela_horario_salesbots.sql",
+    "db:migrate:normalize-ids": "node scripts/aplicar_migracao.js migrations/009_normalizar_id_registro.sql",
     "db:validate": "node scripts/validar_integracao_postgres.js",
     "sync:diagnostico": "node scripts/sincronizar_planilha.js",
     "sync:aplicar": "node scripts/sincronizar_planilha.js --aplicar",
@@ -23,6 +24,7 @@
     "kommo:aplicar": "node scripts/sincronizar_kommo.js --aplicar",
     "teste:fluxo:10": "node scripts/testar_fluxo_completo.js",
     "teste:janela-salesbot": "node scripts/testar_janela_salesbot.js",
+    "teste:processo-inativo": "node scripts/testar_processo_inativo.js",
     "test:real": "node scripts/executar_teste_real.js"
   },
   "dependencies": {

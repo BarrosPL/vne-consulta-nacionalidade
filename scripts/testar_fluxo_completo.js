@@ -87,7 +87,7 @@ try {
     const consultationStartedAt = new Date();
     const consultation = await runNode(["consulta_status.js"], {
       POSTGRES_MODO_TESTE: "true",
-      POSTGRES_TEST_RECORD_ID: String(candidate.id_registro),
+      POSTGRES_TEST_NACIONALIDADE_ID: String(candidate.id),
       POSTGRES_SIMULAR: "false",
       POSTGRES_HEADLESS: "true",
       POSTGRES_CONTROLE_CICLO: "false",

@@ -118,6 +118,22 @@ Paulo. Fora desse período, a movimentação e a nota são concluídas normalmen
 mas a mensagem fica agendada para as `09:00` do próximo dia útil. Mensagens
 agendadas são canceladas se o lead mudar novamente de etapa antes do envio.
 
+Quando o portal informa que a senha não corresponde a nenhum processo de
+nacionalidade ativo, o resultado é tratado como encerramento confirmado: o
+banco marca o processo como finalizado, a Kommo recebe a atualização para Fase
+4, a nota é atualizada e o Salesbot de conclusão é enviado ou agendado.
+
+Testes controlados selecionam o cadastro pelo ID numérico interno. O modo
+legado aplica `btrim()` ao `id_registro`. Se o campo do código não aparecer, o
+worker aguarda o DOM, procura seletores em paralelo e repete a consulta em uma
+nova página antes de registrar a falha.
+
+Falhas de hCaptcha também são repetidas em uma página nova. Cada página admite
+até `captcha_max_retries` soluções do provedor. Se nenhuma funcionar ou o portal
+rejeitar o desafio, a página é descartada, o sistema aguarda
+`captcha_nova_pagina_delay_ms` e inicia outra rodada, respeitando
+`consulta_max_tentativas`.
+
 Por segurança, `KOMMO_SINCRONIZACAO_ATIVA` e
 `KOMMO_SINCRONIZAR_AO_INICIAR` começam desabilitados.
 

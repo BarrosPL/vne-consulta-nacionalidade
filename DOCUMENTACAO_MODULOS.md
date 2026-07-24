@@ -144,6 +144,11 @@ Finalização:
 
 - Um processo é finalizado quando a posição retornada corresponde ao total de
   fases ou quando o texto retornado indica um estado terminal reconhecido.
+- A mensagem `não corresponde a nenhum processo de nacionalidade ativo` também
+  é tratada como encerramento confirmado. O número da senha é ignorado na
+  comparação, permitindo reconhecer a mesma mensagem para qualquer cliente.
+- Nesse caso, o banco grava fase `Encerrado` e motivo
+  `portal_senha_nao_corresponde_processo_ativo`.
 - Depois de finalizado, ele deixa de ser selecionado em consultas futuras.
 - Estados manuais como `Terminado`, `Concluído` e `Encerrado` também podem
   marcar o processo como finalizado durante a sincronização da planilha.
@@ -612,6 +617,12 @@ tipo de mensagem, ciclo de lembrete, bot, lead, etapa, tentativas e resultado.
 Adiciona `disparar_apos`, os estados `agendado` e `cancelado` e um índice
 parcial para localizar rapidamente mensagens que chegaram ao horário de envio.
 
+### `009_normalizar_id_registro.sql`
+
+Remove espaços externos de identificadores antigos. A migração só normaliza
+valores únicos após `btrim()`, evitando violar o índice único caso existam dois
+identificadores legados que se diferenciem apenas por espaços.
+
 Ordem de aplicação em um banco novo:
 
 ```bash
@@ -623,6 +634,7 @@ npm run db:migrate:kommo
 npm run db:migrate:kommo-queue
 npm run db:migrate:salesbots
 npm run db:migrate:salesbot-window
+npm run db:migrate:normalize-ids
 ```
 
 As migrações usam `IF NOT EXISTS` onde aplicável, mas devem ser executadas na
@@ -760,6 +772,7 @@ recorrente do sistema.
 | `npm run kommo:aplicar` | Aplica banco → Kommo |
 | `npm run teste:fluxo:10` | Testa o fluxo completo com até 10 pessoas |
 | `npm run teste:janela-salesbot` | Testa os limites da janela de mensagens |
+| `npm run teste:processo-inativo` | Testa a mensagem de processo encerrado |
 | `npm run db:map` | Mapeia a estrutura do banco |
 | `npm run db:inspect` | Inspeciona os dados de nacionalidade |
 | `npm run db:validate` | Valida a integração PostgreSQL |
@@ -856,7 +869,7 @@ Captcha e navegação:
 | `clickConsultar` | Aciona a consulta no portal |
 | `waitForManualCaptcha` | Aguarda confirmação manual quando configurado |
 | `consultarStatus` | Executa uma tentativa completa no portal |
-| `consultarComTentativas` | Repete a consulta conforme a política de erros |
+| `consultarComTentativas` | Repete falhas transitórias; para captcha, descarta a página, aguarda e obtém um desafio novo |
 
 Configuração, planilhas e utilitários:
 
@@ -889,6 +902,8 @@ Domínio e persistência:
 | `parsePhasePosition` | Extrai a posição numérica da fase |
 | `parsePortalDate` | Converte datas retornadas pelo portal |
 | `isFinalProcess` | Decide se o processo chegou ao estado final |
+| `isInactiveProcessMessage` | Reconhece a mensagem de senha sem processo ativo |
+| `isRetryableConsultationError` | Define quais falhas abrem uma página nova, incluindo captcha |
 | `classifyError` | Classifica falhas para histórico e retentativa |
 | `openPostgresStorage` | Seleciona elegíveis, controla ciclos e persiste resultados |
 | `extractProcessData` | Extrai fase, data, posição e notificações da página |
@@ -982,6 +997,7 @@ Outros auxiliares com função local:
 | `scripts/testar_fluxo_completo.js` / `runNode` | Iniciar subprocessos do teste integrado |
 | `scripts/testar_salesbot.js` / `request` | Fazer chamadas controladas à Kommo |
 | `scripts/testar_janela_salesbot.js` / `localDate` | Criar datas dos testes de fronteira |
+| `scripts/testar_processo_inativo.js` | Validar a detecção de processo encerrado sem fases |
 
 ## 10. Mapa das tabelas persistentes
 
