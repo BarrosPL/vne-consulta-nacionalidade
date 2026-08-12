@@ -1,4 +1,8 @@
 import "dotenv/config";
+import {
+  avisoIntegracaoKommoDesativada,
+  integracaoKommoHabilitada
+} from "./lib/integracao_kommo.js";
 
 const args = process.argv.slice(2);
 const BOT_ID = Number(args[0]);
@@ -17,6 +21,10 @@ if (!Number.isSafeInteger(LEAD_ID) || LEAD_ID <= 0) {
 }
 if (!TOKEN) {
   throw new Error("KOMMO_ACCESS_TOKEN não definido.");
+}
+// A leitura do lead continua permitida; o disparo real do bot, não.
+if (APPLY && !integracaoKommoHabilitada()) {
+  throw new Error(avisoIntegracaoKommoDesativada("disparo manual de Salesbot"));
 }
 
 async function request(route, options = {}) {

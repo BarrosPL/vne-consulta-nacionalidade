@@ -56,6 +56,7 @@ KOMMO_STATUS_FASE_3=100204696
 KOMMO_STATUS_FASE_4=100204712
 KOMMO_STATUS_EXIGENCIA=76490168
 KOMMO_STATUS_RISCO_INDEFERIMENTO=105756056
+KOMMO_INTEGRACAO_HABILITADA=false
 KOMMO_SINCRONIZACAO_ATIVA=false
 KOMMO_INTERVALO_MINUTOS=15
 KOMMO_REQUISICOES_POR_SEGUNDO=4
@@ -73,6 +74,28 @@ KOMMO_SALESBOT_LEMBRETE_EXIGENCIA=
 KOMMO_SALESBOT_FUSO=America/Sao_Paulo
 KOMMO_SINCRONIZAR_AO_INICIAR=false
 ```
+
+## Integração com o Kommo desativada
+
+`KOMMO_INTEGRACAO_HABILITADA=false` é a trava mestre e desliga movimentação de
+etapa, nota e Salesbot. Ela tem precedência sobre `KOMMO_SINCRONIZACAO_ATIVA`:
+mesmo que essa variável esteja em `true`, o agendador não inicia o ciclo do
+Kommo e registra no log:
+
+```text
+[kommo] Integracao desativada. Ignorado: ciclo automatico do Kommo.
+```
+
+Ao desativar, aplique uma vez para cancelar os Salesbots que ficaram na fila
+aguardando a janela comercial:
+
+```bash
+npm run db:migrate:desativar-kommo
+```
+
+As variáveis `KOMMO_*` restantes podem permanecer cadastradas; elas só voltam a
+ter efeito quando a trava for reativada. O relatório
+`RELATORIO_AUDITORIA_KOMMO` deixa de ser emitido enquanto isso.
 
 Após publicar a versão que contém a fila explícita do Kommo, aplique uma vez:
 

@@ -1,6 +1,10 @@
 import "dotenv/config";
 import { spawn } from "node:child_process";
 import pg from "pg";
+import {
+  avisoIntegracaoKommoDesativada,
+  integracaoKommoHabilitada
+} from "./lib/integracao_kommo.js";
 
 const LIMIT = Number(process.env.TESTE_FLUXO_LIMITE ?? 10);
 
@@ -118,40 +122,46 @@ try {
     }
   }
 
-  console.log(`\n[fluxo-completo] 3/3 Sincronizando as mesmas ${candidates.rowCount} pessoa(s) com o Kommo...`);
-  for (let index = 0; index < candidates.rows.length; index++) {
-    const candidate = candidates.rows[index];
-    const detail = report.detalhes[index];
-    console.log(`\n[fluxo-completo] Kommo ${index + 1}/${candidates.rowCount}: ${candidate.cliente}`);
-    const kommoStartedAt = new Date();
-    const kommo = await runNode(["scripts/sincronizar_kommo.js", "--aplicar"], {
-      KOMMO_TESTE_NACIONALIDADE_ID: String(candidate.id),
-      KOMMO_LIMITE_POR_EXECUCAO: "1"
-    });
-    const kommoState = await pool.query(`
-      SELECT n.kommo_pendente, s.status_ultima_tentativa,
-             s.erro_ultima_tentativa, s.ultima_tentativa_em
-        FROM public.nacionalidade_portuguesa n
-        LEFT JOIN public.sincronizacao_crm_nacionalidade s
-          ON s.nacionalidade_id=n.id
-       WHERE n.id=$1
-    `, [candidate.id]);
-    const state = kommoState.rows[0];
-    const attemptedNow = state?.ultima_tentativa_em
-      && new Date(state.ultima_tentativa_em) >= kommoStartedAt;
-    const kommoSucceeded = kommo.ok
-      && attemptedNow
-      && state?.kommo_pendente === false
-      && state?.status_ultima_tentativa === "sucesso";
-    if (kommoSucceeded) {
-      detail.kommo = "sucesso";
-      report.kommo_sucesso++;
-    } else {
-      detail.kommo = "erro";
-      detail.erro_kommo = state?.erro_ultima_tentativa
-        ?? kommo.error
-        ?? "A pendência não foi baixada.";
-      report.kommo_erro++;
+  if (!integracaoKommoHabilitada()) {
+    console.log(`\n[fluxo-completo] 3/3 ${avisoIntegracaoKommoDesativada("etapa de Kommo")}`);
+    report.kommo_ignorado = true;
+    for (const detail of report.detalhes) detail.kommo = "ignorado";
+  } else {
+    console.log(`\n[fluxo-completo] 3/3 Sincronizando as mesmas ${candidates.rowCount} pessoa(s) com o Kommo...`);
+    for (let index = 0; index < candidates.rows.length; index++) {
+      const candidate = candidates.rows[index];
+      const detail = report.detalhes[index];
+      console.log(`\n[fluxo-completo] Kommo ${index + 1}/${candidates.rowCount}: ${candidate.cliente}`);
+      const kommoStartedAt = new Date();
+      const kommo = await runNode(["scripts/sincronizar_kommo.js", "--aplicar"], {
+        KOMMO_TESTE_NACIONALIDADE_ID: String(candidate.id),
+        KOMMO_LIMITE_POR_EXECUCAO: "1"
+      });
+      const kommoState = await pool.query(`
+        SELECT n.kommo_pendente, s.status_ultima_tentativa,
+               s.erro_ultima_tentativa, s.ultima_tentativa_em
+          FROM public.nacionalidade_portuguesa n
+          LEFT JOIN public.sincronizacao_crm_nacionalidade s
+            ON s.nacionalidade_id=n.id
+         WHERE n.id=$1
+      `, [candidate.id]);
+      const state = kommoState.rows[0];
+      const attemptedNow = state?.ultima_tentativa_em
+        && new Date(state.ultima_tentativa_em) >= kommoStartedAt;
+      const kommoSucceeded = kommo.ok
+        && attemptedNow
+        && state?.kommo_pendente === false
+        && state?.status_ultima_tentativa === "sucesso";
+      if (kommoSucceeded) {
+        detail.kommo = "sucesso";
+        report.kommo_sucesso++;
+      } else {
+        detail.kommo = "erro";
+        detail.erro_kommo = state?.erro_ultima_tentativa
+          ?? kommo.error
+          ?? "A pendência não foi baixada.";
+        report.kommo_erro++;
+      }
     }
   }
 } catch (error) {

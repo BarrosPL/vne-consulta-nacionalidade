@@ -17,6 +17,7 @@
     "db:migrate:salesbots": "node scripts/aplicar_migracao.js migrations/007_salesbots_kommo.sql",
     "db:migrate:salesbot-window": "node scripts/aplicar_migracao.js migrations/008_janela_horario_salesbots.sql",
     "db:migrate:normalize-ids": "node scripts/aplicar_migracao.js migrations/009_normalizar_id_registro.sql",
+    "db:migrate:desativar-kommo": "node scripts/aplicar_migracao.js migrations/010_desativar_integracao_kommo.sql",
     "db:validate": "node scripts/validar_integracao_postgres.js",
     "sync:diagnostico": "node scripts/sincronizar_planilha.js",
     "sync:aplicar": "node scripts/sincronizar_planilha.js --aplicar",

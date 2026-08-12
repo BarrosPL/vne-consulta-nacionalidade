@@ -1,4 +1,8 @@
 import { spawn } from "node:child_process";
+import {
+  avisoIntegracaoKommoDesativada,
+  integracaoKommoHabilitada
+} from "./lib/integracao_kommo.js";
 
 const hour = Number(process.env.AGENDADOR_HORA ?? 8);
 const minute = Number(process.env.AGENDADOR_MINUTO ?? 0);
@@ -7,7 +11,9 @@ const validateOnly = String(process.env.AGENDADOR_APENAS_VALIDAR ?? "false").toL
 const syncEnabled = String(process.env.SINCRONIZACAO_ATIVA ?? "true").toLowerCase() === "true";
 const syncIntervalMinutes = Number(process.env.SINCRONIZACAO_INTERVALO_MINUTOS ?? 10);
 const syncRunOnStart = String(process.env.SINCRONIZAR_AO_INICIAR ?? "false").toLowerCase() === "true";
-const kommoEnabled = String(process.env.KOMMO_SINCRONIZACAO_ATIVA ?? "false").toLowerCase() === "true";
+const kommoIntegrationEnabled = integracaoKommoHabilitada();
+const kommoEnabled = kommoIntegrationEnabled
+  && String(process.env.KOMMO_SINCRONIZACAO_ATIVA ?? "false").toLowerCase() === "true";
 const kommoIntervalMinutes = Number(process.env.KOMMO_INTERVALO_MINUTOS ?? 15);
 const kommoRunOnStart = String(process.env.KOMMO_SINCRONIZAR_AO_INICIAR ?? "false").toLowerCase() === "true";
 
@@ -127,7 +133,14 @@ function executeKommo() {
 }
 
 function scheduleKommo() {
-  if (!kommoEnabled) return;
+  if (!kommoIntegrationEnabled) {
+    console.log(avisoIntegracaoKommoDesativada("ciclo automatico do Kommo"));
+    return;
+  }
+  if (!kommoEnabled) {
+    console.log("[kommo] Sincronizacao desativada por KOMMO_SINCRONIZACAO_ATIVA.");
+    return;
+  }
   kommoTimer = setInterval(executeKommo, kommoIntervalMinutes * 60 * 1000);
   console.log(`[kommo] Intervalo configurado: ${kommoIntervalMinutes} minuto(s).`);
 }

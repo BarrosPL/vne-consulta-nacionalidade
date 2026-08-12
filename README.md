@@ -71,7 +71,35 @@ npm.cmd run sync:aplicar
 Um registro só é elegível para consulta quando está ativo na planilha, não é
 duplicata, possui código e ainda não foi finalizado.
 
-## Integração com Kommo
+## Integração com Kommo (desativada)
+
+A integração com o Kommo está **desligada**. O sistema hoje faz apenas
+planilha → consulta no portal → PostgreSQL. Nenhuma movimentação de etapa,
+nota ou Salesbot é enviada ao CRM.
+
+A trava é `KOMMO_INTEGRACAO_HABILITADA`, que fica em `false` por padrão e vale
+para todos os caminhos de escrita:
+
+- o agendador não inicia o ciclo do Kommo, mesmo com `KOMMO_SINCRONIZACAO_ATIVA=true`;
+- `npm run kommo:aplicar` e `npm run kommo:diagnostico` encerram com aviso;
+- `scripts/testar_salesbot.js --aplicar` recusa o disparo manual;
+- `npm run teste:fluxo:10` pula a etapa de Kommo e a marca como `ignorado`.
+
+Ao desativar, cancele os Salesbots que ficaram na fila aguardando a janela
+comercial, para que nenhuma mensagem antiga seja enviada em uma reativação
+futura:
+
+```powershell
+npm.cmd run db:migrate:desativar-kommo
+```
+
+A fila de pendências (`kommo_pendente`) continua sendo alimentada pelo banco.
+Ela não envia nada enquanto a trava estiver ativa e serve para retomar a
+sincronização caso a integração volte.
+
+Para reativar, defina `KOMMO_INTEGRACAO_HABILITADA=true` junto de
+`KOMMO_SINCRONIZACAO_ATIVA=true`. A documentação abaixo descreve o
+comportamento nesse caso.
 
 O diagnóstico consulta o Kommo, mas não cria nem altera leads:
 

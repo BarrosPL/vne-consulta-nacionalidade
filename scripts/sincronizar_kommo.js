@@ -8,6 +8,17 @@ import {
   isSalesbotBusinessHours,
   nextSalesbotBusinessTime
 } from "./lib/janela_salesbot.js";
+import {
+  avisoIntegracaoKommoDesativada,
+  integracaoKommoHabilitada
+} from "./lib/integracao_kommo.js";
+
+// A trava vem antes de qualquer leitura de configuracao para que o modulo nao
+// exija token nem IDs de etapa enquanto a integracao estiver desativada.
+if (!integracaoKommoHabilitada()) {
+  console.warn(avisoIntegracaoKommoDesativada("sincronizacao com o Kommo"));
+  process.exit(0);
+}
 
 const APPLY = process.argv.includes("--aplicar");
 const LIMIT = Number(process.env.KOMMO_LIMITE_POR_EXECUCAO ?? 30);

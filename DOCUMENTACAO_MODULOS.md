@@ -8,9 +8,15 @@ Ele mantém quatro integrações principais:
 1. Google Sheets como origem operacional dos clientes.
 2. PostgreSQL como base central e histórico.
 3. Portal da Justiça portuguesa como fonte do andamento dos processos.
-4. Kommo como CRM de acompanhamento.
+4. Kommo como CRM de acompanhamento — **atualmente desativado**.
 
-Fluxo principal:
+> **Estado atual: integração com o Kommo desligada.**
+> A trava `KOMMO_INTEGRACAO_HABILITADA` está em `false` e impede movimentação
+> de etapa, criação ou atualização de nota e qualquer disparo de Salesbot. O
+> sistema opera apenas como planilha → consulta → PostgreSQL. As seções 2.4 e
+> 2.5 descrevem o comportamento que volta a valer se a trava for reativada.
+
+Fluxo principal em operação:
 
 ```text
 Google Sheets
@@ -22,12 +28,18 @@ PostgreSQL
 Consulta ao portal português
     ↓
 PostgreSQL atualizado
+```
+
+Etapas desativadas pela trava:
+
+```text
+PostgreSQL atualizado
     ↓
-Sincronização com o Kommo
+[desativado] Sincronização com o Kommo
     ↓
-Movimentação + nota
+[desativado] Movimentação + nota
     ↓
-Salesbot imediato ou agendado
+[desativado] Salesbot imediato ou agendado
 ```
 
 O processo que mantém tudo em execução no EasyPanel é
@@ -687,6 +699,7 @@ AGENDADOR_MINUTO=0
 POSTGRES_CICLO_DIAS=15
 POSTGRES_LIMITE=1000
 
+KOMMO_INTEGRACAO_HABILITADA=false
 KOMMO_SINCRONIZACAO_ATIVA=true
 KOMMO_INTERVALO_MINUTOS=15
 KOMMO_SINCRONIZAR_AO_INICIAR=true
@@ -706,12 +719,22 @@ KOMMO_SALESBOT_EXIGENCIA=
 KOMMO_SALESBOT_LEMBRETE_EXIGENCIA=
 ```
 
-Sequência efetiva:
+`KOMMO_INTEGRACAO_HABILITADA=false` é a trava mestre e tem precedência sobre
+`KOMMO_SINCRONIZACAO_ATIVA`. As demais variáveis `KOMMO_*` continuam
+cadastradas apenas para uma eventual reativação.
+
+Sequência efetiva **em operação hoje**:
 
 ```text
 Planilha sincroniza com o PostgreSQL
 → processos elegíveis são consultados
 → cada resultado confirmado cria uma pendência para o Kommo
+→ a pendência permanece na fila, sem envio, enquanto a trava estiver ativa
+```
+
+Sequência completa, válida somente se a trava for reativada:
+
+```text
 → o Kommo consome as pendências em lotes
 → a etapa só muda quando o status_id atual é diferente
 → a nota é criada ou atualizada
@@ -779,6 +802,7 @@ recorrente do sistema.
 | `npm run test:real` | Executa um teste real controlado |
 | `npm run db:migrate:salesbots` | Aplica persistência dos Salesbots |
 | `npm run db:migrate:salesbot-window` | Aplica a fila de horário comercial |
+| `npm run db:migrate:desativar-kommo` | Cancela os Salesbots agendados na fila |
 
 ## 8. Resumo das regras de negócio
 
@@ -975,7 +999,27 @@ trava no `finally`.
 | `isSalesbotBusinessHours` | Informa se o momento está entre 09:00 e 18:00 em dia útil |
 | `nextSalesbotBusinessTime` | Calcula 09:00 do mesmo dia ou do próximo dia útil |
 
-### 9.6. Scripts sem API interna
+### 9.6. `scripts/lib/integracao_kommo.js`
+
+Trava mestre da integração com o Kommo. Fica no código, e não somente na
+configuração do EasyPanel, para que `KOMMO_SINCRONIZACAO_ATIVA` ou uma execução
+manual não consigam reativar os envios por engano.
+
+| Função | Responsabilidade |
+|---|---|
+| `integracaoKommoHabilitada` | Informa se `KOMMO_INTEGRACAO_HABILITADA` é exatamente `true` |
+| `avisoIntegracaoKommoDesativada` | Monta a mensagem padrão de bloqueio para os logs |
+
+Pontos protegidos pela trava:
+
+| Arquivo | Comportamento com a trava ativa |
+|---|---|
+| `scripts/sincronizar_kommo.js` | Encerra com aviso e código de saída `0`, antes de exigir token |
+| `scripts/agendador.js` | Não agenda nem executa o ciclo do Kommo |
+| `scripts/testar_salesbot.js` | Recusa `--aplicar`; a leitura do lead continua permitida |
+| `scripts/testar_fluxo_completo.js` | Pula a etapa 3/3 e marca os detalhes como `ignorado` |
+
+### 9.7. Scripts sem API interna
 
 Estes arquivos executam seu trabalho no bloco principal, sem expor funções de
 domínio reutilizáveis:
