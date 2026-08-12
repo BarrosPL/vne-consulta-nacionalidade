@@ -7,6 +7,9 @@ import {
 const hour = Number(process.env.AGENDADOR_HORA ?? 8);
 const minute = Number(process.env.AGENDADOR_MINUTO ?? 0);
 const runOnStart = String(process.env.EXECUTAR_AO_INICIAR ?? "false").toLowerCase() === "true";
+// Vale somente para a execucao de partida. As verificacoes diarias seguintes
+// continuam respeitando o intervalo de POSTGRES_CICLO_DIAS.
+const forceCycleOnStart = String(process.env.FORCAR_CICLO_AO_INICIAR ?? "false").toLowerCase() === "true";
 const validateOnly = String(process.env.AGENDADOR_APENAS_VALIDAR ?? "false").toLowerCase() === "true";
 const syncEnabled = String(process.env.SINCRONIZACAO_ATIVA ?? "true").toLowerCase() === "true";
 const syncIntervalMinutes = Number(process.env.SINCRONIZACAO_INTERVALO_MINUTOS ?? 10);
@@ -55,12 +58,15 @@ function schedule() {
   }, delay);
 }
 
-function execute() {
+function execute({ forceCycle = false } = {}) {
   if (child) {
     console.warn("[agendador] Worker anterior ainda esta ativo; verificacao ignorada.");
     return Promise.resolve();
   }
-  console.log(`[agendador] Iniciando verificacao de ciclo: ${new Date().toISOString()}`);
+  console.log(
+    `[agendador] Iniciando verificacao de ciclo: ${new Date().toISOString()}`
+    + (forceCycle ? " (ciclo forcado pela partida)" : "")
+  );
   return new Promise((resolve) => {
     child = spawn(process.execPath, ["consulta_status.js"], {
       cwd: process.cwd(),
@@ -72,7 +78,10 @@ function execute() {
         POSTGRES_HEADLESS: "true",
         POSTGRES_CONTROLE_CICLO: "true",
         POSTGRES_CICLO_DIAS: process.env.POSTGRES_CICLO_DIAS ?? "15",
-        POSTGRES_LIMITE: process.env.POSTGRES_LIMITE ?? "1000"
+        POSTGRES_LIMITE: process.env.POSTGRES_LIMITE ?? "1000",
+        // Definido explicitamente para que uma variavel global no EasyPanel nao
+        // faca a verificacao diaria abrir um ciclo completo todos os dias.
+        POSTGRES_FORCAR_CICLO: forceCycle ? "true" : "false"
       }
     });
     child.once("error", (error) => {
@@ -166,6 +175,18 @@ if (validateOnly) {
   scheduleSync();
   if (kommoRunOnStart) executeKommo();
   scheduleKommo();
-  if (runOnStart) await execute();
+  if (runOnStart) {
+    if (forceCycleOnStart) {
+      console.log(
+        "[agendador] FORCAR_CICLO_AO_INICIAR ativo: a execucao de partida abre "
+        + "um ciclo completo mesmo que o intervalo ainda nao tenha vencido."
+      );
+    }
+    await execute({ forceCycle: forceCycleOnStart });
+  } else if (forceCycleOnStart) {
+    console.warn(
+      "[agendador] FORCAR_CICLO_AO_INICIAR nao tem efeito sem EXECUTAR_AO_INICIAR=true."
+    );
+  }
   schedule();
 }

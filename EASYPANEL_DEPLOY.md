@@ -133,6 +133,36 @@ antes de uma nova tentativa.
 
 `EXECUTAR_AO_INICIAR=true` faz uma verificação no deploy ou reinício. Isso não força um novo ciclo: se os 15 dias ainda não venceram, o banco encerra a verificação sem processar registros.
 
+## Forçar um ciclo completo na implantação
+
+Para que o deploy abra um ciclo imediatamente, mesmo com o intervalo em aberto:
+
+```env
+EXECUTAR_AO_INICIAR=true
+FORCAR_CICLO_AO_INICIAR=true
+```
+
+O forçamento vale **apenas para a execução de partida**. As verificações
+diárias das 08:00 continuam respeitando `POSTGRES_CICLO_DIAS`, porque o
+agendador envia `POSTGRES_FORCAR_CICLO=false` para elas explicitamente. Isso
+evita que a variável, esquecida ligada, abra um ciclo completo todo dia.
+
+No log da partida:
+
+```text
+[agendador] FORCAR_CICLO_AO_INICIAR ativo: a execucao de partida abre um ciclo completo...
+[ciclo] POSTGRES_FORCAR_CICLO ativo: abrindo ciclo completo antes do vencimento previsto para ...
+```
+
+Um ciclo completo processa todos os códigos elegíveis e **leva várias horas**;
+o ciclo anterior levou cerca de 16 horas para 326 códigos. Confira o saldo do
+2Captcha antes de forçar. Como cada reinício do contêiner repete a partida,
+volte `FORCAR_CICLO_AO_INICIAR` para `false` depois que o ciclo abrir, para que
+um restart não interrompa o ciclo em andamento e comece outro.
+
+Para uma execução manual fora do agendador, a variável equivalente é
+`POSTGRES_FORCAR_CICLO=true`.
+
 Não cadastrar `CAPSOLVER_API_KEY`, pois o projeto usa exclusivamente 2Captcha.
 
 ## Primeiro deploy

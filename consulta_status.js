@@ -399,7 +399,8 @@ const DEFAULT_CONFIG = {
   intervalo_entre_consultas_ms: 5000,
   reconsulta_apos_dias: 15,
   usar_controle_ciclo: true,
-  ciclo_intervalo_dias: 15
+  ciclo_intervalo_dias: 15,
+  forcar_ciclo: false
 };
 
 // ─── Utilitários ──────────────────────────────────────────────────────────────
@@ -432,6 +433,9 @@ function loadConfig() {
   }
   if (process.env.POSTGRES_CICLO_DIAS) {
     config.ciclo_intervalo_dias = Number(process.env.POSTGRES_CICLO_DIAS);
+  }
+  if (process.env.POSTGRES_FORCAR_CICLO) {
+    config.forcar_ciclo = process.env.POSTGRES_FORCAR_CICLO.toLowerCase() === "true";
   }
   return config;
 }
@@ -781,6 +785,15 @@ export async function openPostgresStorage(config) {
     `, [cycleDays]);
     nextCycleAt = lastCycle.rows[0]?.proxima_execucao_em ?? null;
     cycleDue = !nextCycleAt || new Date(nextCycleAt) <= new Date();
+    // Abre um ciclo completo mesmo antes do vencimento. Usado na implantacao,
+    // quando se quer reprocessar todos os codigos sem esperar o intervalo.
+    if (!cycleDue && config.forcar_ciclo) {
+      console.warn(
+        "[ciclo] POSTGRES_FORCAR_CICLO ativo: abrindo ciclo completo antes do "
+        + `vencimento previsto para ${new Date(nextCycleAt).toISOString()}.`
+      );
+      cycleDue = true;
+    }
   }
 
   const params = [];

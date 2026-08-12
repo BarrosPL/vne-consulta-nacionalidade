@@ -169,4 +169,8 @@ Por segurança, `KOMMO_SINCRONIZACAO_ATIVA` e
 
 O `Dockerfile` inicia um agendador diário. O worker só abre um ciclo completo quando o intervalo configurado de 15 dias estiver vencido.
 
+Para abrir um ciclo já na implantação, use `EXECUTAR_AO_INICIAR=true` junto de
+`FORCAR_CICLO_AO_INICIAR=true`. O forçamento vale apenas para a execução de
+partida; as verificações diárias seguem respeitando o intervalo.
+
 Consulte `EASYPANEL_DEPLOY.md` para o passo a passo de publicação, variáveis e acompanhamento.
