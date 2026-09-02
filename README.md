@@ -71,35 +71,41 @@ npm.cmd run sync:aplicar
 Um registro só é elegível para consulta quando está ativo na planilha, não é
 duplicata, possui código e ainda não foi finalizado.
 
-## Integração com Kommo (desativada)
+## Integração com Kommo (reativada)
 
-A integração com o Kommo está **desligada**. O sistema hoje faz apenas
-planilha → consulta no portal → PostgreSQL. Nenhuma movimentação de etapa,
-nota ou Salesbot é enviada ao CRM.
+A integração está **ligada**: `KOMMO_INTEGRACAO_HABILITADA=true`. O sistema
+volta a movimentar o lead entre as etapas conforme a fase identificada e a
+disparar Salesbots.
 
-A trava é `KOMMO_INTEGRACAO_HABILITADA`, que fica em `false` por padrão e vale
-para todos os caminhos de escrita:
+A nota de status ficou **desligada** por `KOMMO_NOTA_HABILITADA=false`, porque
+os mesmos dados agora vão para os campos personalizados do lead. Com a nota
+desligada, o ID e o hash já gravados são preservados: nada é escrito no Kommo e
+nada é sobrescrito no banco. Para voltar a ter a nota, defina
+`KOMMO_NOTA_HABILITADA=true`.
+
+A trava mestre continua valendo para todos os caminhos de escrita e, quando
+`false`, desliga movimentação, nota e Salesbot de uma vez:
 
 - o agendador não inicia o ciclo do Kommo, mesmo com `KOMMO_SINCRONIZACAO_ATIVA=true`;
 - `npm run kommo:aplicar` e `npm run kommo:diagnostico` encerram com aviso;
 - `scripts/testar_salesbot.js --aplicar` recusa o disparo manual;
 - `npm run teste:fluxo:10` pula a etapa de Kommo e a marca como `ignorado`.
 
-Ao desativar, cancele os Salesbots que ficaram na fila aguardando a janela
-comercial, para que nenhuma mensagem antiga seja enviada em uma reativação
-futura:
+Se precisar desligar de novo, cancele os Salesbots que ficarem na fila
+aguardando a janela comercial:
 
 ```powershell
 npm.cmd run db:migrate:desativar-kommo
 ```
 
-A fila de pendências (`kommo_pendente`) continua sendo alimentada pelo banco.
-Ela não envia nada enquanto a trava estiver ativa e serve para retomar a
-sincronização caso a integração volte.
+**Atenção na primeira execução após a reativação.** Os lembretes de 30 dias são
+contados a partir de `etapa_entrou_em`, que ficou congelado durante o período
+desligado. Rode sempre o diagnóstico antes de aplicar, para ver quantos
+lembretes estão vencidos:
 
-Para reativar, defina `KOMMO_INTEGRACAO_HABILITADA=true` junto de
-`KOMMO_SINCRONIZACAO_ATIVA=true`. A documentação abaixo descreve o
-comportamento nesse caso.
+```powershell
+npm.cmd run kommo:diagnostico
+```
 
 O diagnóstico consulta o Kommo, mas não cria nem altera leads:
 
@@ -164,6 +170,78 @@ rejeitar o desafio, a página é descartada, o sistema aguarda
 
 Por segurança, `KOMMO_SINCRONIZACAO_ATIVA` e
 `KOMMO_SINCRONIZAR_AO_INICIAR` começam desabilitados.
+
+## Consulta de admissao
+
+O ciclo completo e global e roda a cada 15 dias. Para que um cliente novo nao
+espere ate 15 dias pela primeira consulta, a verificacao diaria das 08:00 faz
+uma passagem curta de admissao quando o ciclo ainda nao venceu.
+
+A admissao seleciona apenas cadastros elegiveis que ainda nao produziram
+nenhuma fase, com limite proprio:
+
+```env
+POSTGRES_ADMISSAO_ATIVA=true
+POSTGRES_ADMISSAO_LIMITE=25
+POSTGRES_ADMISSAO_REINTERVALO_HORAS=24
+POSTGRES_ADMISSAO_MAX_TENTATIVAS=5
+```
+
+Um cadastro que falha e tentado novamente a cada 24 horas ate o teto de
+tentativas; depois disso ele aguarda o proximo ciclo completo. Isso impede que
+um codigo invalido seja consultado indefinidamente.
+
+A admissao **nunca** reinicia a contagem do ciclo global. A coluna `tipo` em
+`ciclos_consulta_nacionalidade` separa `completo` de `admissao`, e somente os
+ciclos completos definem o proximo vencimento.
+
+```powershell
+npm.cmd run db:migrate:admissao
+```
+
+## Campos personalizados no Kommo
+
+Os resultados da consulta sao gravados em campos personalizados do lead, no
+lugar da nota. Essa escrita tem trava propria e independente da trava mestre:
+
+```env
+KOMMO_CAMPOS_HABILITADO=true
+KOMMO_CAMPOS_ATIVO=true
+KOMMO_CAMPOS_INTERVALO_MINUTOS=30
+KOMMO_CAMPOS_LIMITE_POR_EXECUCAO=100
+```
+
+`KOMMO_CAMPOS_HABILITADO` libera **somente** o preenchimento de campos. Nenhuma
+movimentacao de etapa, nota ou Salesbot acontece por esse caminho: isso
+continua governado apenas por `KOMMO_INTEGRACAO_HABILITADA`, que segue `false`.
+
+Mapeamento aplicado:
+
+| Campo no Kommo | ID | Origem no banco |
+|---|---:|---|
+| Fase Processual | 2990113 | `fase_consulta_automatica` |
+| Posicao da Fase | 2990115 | `posicao_fase` |
+| Total de Fases | 2990117 | `total_fases` |
+| Data da Fase | 2990119 | `data_fase` |
+| Ultima Consulta CRC | 2990121 | `data_ultima_consulta` |
+| Possui Notificacao | 2990123 | `possui_notificacao` |
+| Resumo de Notificacoes | 2990125 | `titulos_notificacoes` |
+| Origem da Sincronizacao | 2990127 | `vne:nacionalidade:<id>` |
+| Codigo CRC | 2990129 | `codigo_consulta` |
+| N do Processo | 2990131 | `numero_processo` |
+
+Um campo sem valor conhecido nao e enviado, para nunca apagar um dado
+preenchido manualmente. O modulo nao cria leads: sem `crm_lead_id` conhecido, o
+cadastro e apenas reportado como `sem_lead`.
+
+```powershell
+npm.cmd run db:migrate:campos-kommo
+npm.cmd run campos:diagnostico
+npm.cmd run campos:aplicar
+```
+
+O agendador tambem dispara essa rotina logo apos cada execucao do worker de
+consulta, para que um resultado novo chegue ao CRM sem esperar o intervalo.
 
 ## EasyPanel
 

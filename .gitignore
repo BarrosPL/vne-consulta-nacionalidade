@@ -4,3 +4,4 @@ google-service-account.json
 *.xlsx
 *.png
 npm-debug.log*
+easypanel.env

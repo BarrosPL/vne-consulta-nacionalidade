@@ -400,7 +400,13 @@ const DEFAULT_CONFIG = {
   reconsulta_apos_dias: 15,
   usar_controle_ciclo: true,
   ciclo_intervalo_dias: 15,
-  forcar_ciclo: false
+  forcar_ciclo: false,
+  // Consulta de admissao: atende cadastros novos que ainda nunca produziram um
+  // resultado, sem esperar o vencimento do ciclo global.
+  admissao_ativa: true,
+  admissao_limite: 25,
+  admissao_reintervalo_horas: 24,
+  admissao_max_tentativas: 5
 };
 
 // ─── Utilitários ──────────────────────────────────────────────────────────────
@@ -436,6 +442,18 @@ function loadConfig() {
   }
   if (process.env.POSTGRES_FORCAR_CICLO) {
     config.forcar_ciclo = process.env.POSTGRES_FORCAR_CICLO.toLowerCase() === "true";
+  }
+  if (process.env.POSTGRES_ADMISSAO_ATIVA) {
+    config.admissao_ativa = process.env.POSTGRES_ADMISSAO_ATIVA.toLowerCase() === "true";
+  }
+  if (process.env.POSTGRES_ADMISSAO_LIMITE) {
+    config.admissao_limite = Number(process.env.POSTGRES_ADMISSAO_LIMITE);
+  }
+  if (process.env.POSTGRES_ADMISSAO_REINTERVALO_HORAS) {
+    config.admissao_reintervalo_horas = Number(process.env.POSTGRES_ADMISSAO_REINTERVALO_HORAS);
+  }
+  if (process.env.POSTGRES_ADMISSAO_MAX_TENTATIVAS) {
+    config.admissao_max_tentativas = Number(process.env.POSTGRES_ADMISSAO_MAX_TENTATIVAS);
   }
   return config;
 }
@@ -775,11 +793,14 @@ export async function openPostgresStorage(config) {
       await pool.end();
       throw new Error("ciclo_intervalo_dias deve ser um inteiro entre 1 e 365.");
     }
+    // Somente ciclos completos definem o vencimento. Uma consulta de admissao
+    // nunca reinicia a contagem do intervalo global.
     const lastCycle = await lockClient.query(`
       SELECT finalizado_em,
              finalizado_em + ($1 * interval '1 day') AS proxima_execucao_em
         FROM public.ciclos_consulta_nacionalidade
        WHERE status IN ('concluido', 'concluido_com_erros')
+         AND tipo = 'completo'
        ORDER BY finalizado_em DESC
        LIMIT 1
     `, [cycleDays]);
@@ -793,6 +814,37 @@ export async function openPostgresStorage(config) {
         + `vencimento previsto para ${new Date(nextCycleAt).toISOString()}.`
       );
       cycleDue = true;
+    }
+  }
+
+  // Enquanto o ciclo global nao vence, uma passagem curta atende quem entrou
+  // depois do ultimo ciclo e ainda nao tem nenhum resultado. O ciclo completo
+  // continua governado apenas por ciclo_intervalo_dias.
+  const admissionRun = useCycleControl
+    && !cycleDue
+    && !config.modo_teste
+    && Boolean(config.admissao_ativa);
+  const admissionLimit = Number(config.admissao_limite);
+  const admissionRetryHours = Number(config.admissao_reintervalo_horas);
+  const admissionMaxAttempts = Number(config.admissao_max_tentativas);
+  if (admissionRun) {
+    if (!Number.isInteger(admissionLimit) || admissionLimit < 1 || admissionLimit > 1000) {
+      await lockClient.query("SELECT pg_advisory_unlock(hashtext('vne_consulta_nacionalidade'))");
+      lockClient.release();
+      await pool.end();
+      throw new Error("admissao_limite deve ser um inteiro entre 1 e 1000.");
+    }
+    if (!Number.isInteger(admissionRetryHours) || admissionRetryHours < 1 || admissionRetryHours > 8760) {
+      await lockClient.query("SELECT pg_advisory_unlock(hashtext('vne_consulta_nacionalidade'))");
+      lockClient.release();
+      await pool.end();
+      throw new Error("admissao_reintervalo_horas deve ser um inteiro entre 1 e 8760.");
+    }
+    if (!Number.isInteger(admissionMaxAttempts) || admissionMaxAttempts < 1 || admissionMaxAttempts > 100) {
+      await lockClient.query("SELECT pg_advisory_unlock(hashtext('vne_consulta_nacionalidade'))");
+      lockClient.release();
+      await pool.end();
+      throw new Error("admissao_max_tentativas deve ser um inteiro entre 1 e 100.");
     }
   }
 
@@ -814,6 +866,24 @@ export async function openPostgresStorage(config) {
     }
   } else if (useCycleControl) {
     // Um ciclo vencido sempre percorre todos os codigos do banco.
+    if (admissionRun) {
+      // Somente cadastros que nunca chegaram a produzir uma fase.
+      filters.push("fase_consulta_automatica IS NULL");
+      // Espaca as retentativas de um cadastro novo que falhou.
+      params.push(admissionRetryHours);
+      filters.push(`(
+        data_ultima_tentativa IS NULL
+        OR data_ultima_tentativa < now() - ($${params.length} * interval '1 hour')
+      )`);
+      // Um codigo que falha sempre para de ser tentado e aguarda o ciclo completo.
+      params.push(admissionMaxAttempts);
+      filters.push(`(
+        SELECT count(*)
+          FROM public.historico_consultas_nacionalidade h
+         WHERE h.nacionalidade_id = public.nacionalidade_portuguesa.id
+           AND NOT h.sucesso
+      ) < $${params.length}`);
+    }
   } else if (config.reconsultar_processados) {
     const days = Number(config.reconsulta_apos_dias);
     if (!Number.isInteger(days) || days < 1 || days > 365) {
@@ -830,9 +900,9 @@ export async function openPostgresStorage(config) {
   } else {
     filters.push("fase_consulta_automatica IS NULL");
   }
-  params.push(limit);
+  params.push(admissionRun ? admissionLimit : limit);
 
-  const selectedCodes = cycleDue ? await pool.query(`
+  const selectedCodes = (cycleDue || admissionRun) ? await pool.query(`
     SELECT btrim(codigo_consulta) AS codigo
       FROM public.nacionalidade_portuguesa
      WHERE ${filters.join(" AND ")}
@@ -868,7 +938,17 @@ export async function openPostgresStorage(config) {
     entries.push({ codigo, records: related.rows });
   }
 
-  if (useCycleControl && cycleDue && !config.simular) {
+  if (admissionRun) {
+    console.log(
+      `[admissao] Ciclo completo ainda nao vencido (previsto para ${new Date(nextCycleAt).toISOString()}). `
+      + `${entries.length} cadastro(s) novo(s) sem resultado selecionado(s), limite ${admissionLimit}.`
+    );
+  }
+
+  // Uma admissao sem ninguem a atender nao abre registro de ciclo.
+  const cycleType = cycleDue ? "completo" : "admissao";
+  const shouldOpenCycle = cycleDue || (admissionRun && entries.length > 0);
+  if (useCycleControl && shouldOpenCycle && !config.simular) {
     await lockClient.query(`
       UPDATE public.ciclos_consulta_nacionalidade
          SET status = 'interrompido',
@@ -878,10 +958,10 @@ export async function openPostgresStorage(config) {
     `);
     const cycle = await lockClient.query(`
       INSERT INTO public.ciclos_consulta_nacionalidade (
-        status, codigos_selecionados, registros_selecionados
-      ) VALUES ('em_andamento', $1, $2)
+        status, tipo, codigos_selecionados, registros_selecionados
+      ) VALUES ('em_andamento', $1, $2, $3)
       RETURNING id
-    `, [entries.length, entries.reduce((total, entry) => total + entry.records.length, 0)]);
+    `, [cycleType, entries.length, entries.reduce((total, entry) => total + entry.records.length, 0)]);
     cycleId = cycle.rows[0].id;
   }
 
@@ -894,7 +974,8 @@ export async function openPostgresStorage(config) {
       const entry = entries[rowNumber - 2];
       return entry ? `${entry.records.length} registro(s), codigo ${maskCode(entry.codigo)}` : "sem registro";
     },
-    cycleStatus: cycleDue ? "devido" : "aguardando",
+    cycleStatus: cycleDue ? "devido" : (admissionRun ? "admissao" : "aguardando"),
+    cycleType,
     nextCycleAt,
     async updateRow(rowNumber, result, observacao) {
       const entry = entries[rowNumber - 2];
@@ -977,11 +1058,13 @@ export async function openPostgresStorage(config) {
     async finalize(summary) {
       if (!cycleId || cycleFinalized) return;
       const status = summary.erros > 0 ? "concluido_com_erros" : "concluido";
+      // A admissao preserva o vencimento do ciclo completo em andamento.
+      const nextRunAt = cycleType === "completo" ? null : nextCycleAt;
       await lockClient.query(`
         UPDATE public.ciclos_consulta_nacionalidade
            SET status = $2,
                finalizado_em = now(),
-               proxima_execucao_em = now() + ($3 * interval '1 day'),
+               proxima_execucao_em = coalesce($9::timestamptz, now() + ($3 * interval '1 day')),
                sucessos = $4,
                erros = $5,
                ignorados = $6,
@@ -991,7 +1074,14 @@ export async function openPostgresStorage(config) {
       `, [
         cycleId, status, cycleDays, summary.sucessos, summary.erros,
         summary.ignorados, JSON.stringify(summary.erros_por_tipo),
-        summary.erros > 0 ? "Ciclo finalizado com erros individuais" : "Ciclo finalizado com sucesso"
+        cycleType === "admissao"
+          ? (summary.erros > 0
+            ? "Consulta de admissao finalizada com erros individuais"
+            : "Consulta de admissao finalizada com sucesso")
+          : (summary.erros > 0
+            ? "Ciclo finalizado com erros individuais"
+            : "Ciclo finalizado com sucesso"),
+        nextRunAt
       ]);
       cycleFinalized = true;
     },
@@ -1020,7 +1110,7 @@ export async function openPostgresStorage(config) {
         phases[phase] = (phases[phase] ?? 0) + 1;
       }
       return {
-        tipo: "ciclo_consulta",
+        tipo: cycleType === "admissao" ? "consulta_admissao" : "ciclo_consulta",
         ciclo: cycle.rows[0] ?? null,
         fases: phases,
         finalizados_neste_resultado: details.rows.filter(
@@ -1044,7 +1134,10 @@ export async function openPostgresStorage(config) {
     },
     finishMessage: cycleDue
       ? `${entries.length} codigo(s) processado(s) no PostgreSQL`
-      : `Ciclo ainda nao vencido. Proxima execucao: ${new Date(nextCycleAt).toISOString()}`
+      : (admissionRun
+        ? `Admissao: ${entries.length} cadastro(s) novo(s) processado(s). `
+          + `Ciclo completo permanece previsto para ${new Date(nextCycleAt).toISOString()}`
+        : `Ciclo ainda nao vencido. Proxima execucao: ${new Date(nextCycleAt).toISOString()}`)
   };
 }
 

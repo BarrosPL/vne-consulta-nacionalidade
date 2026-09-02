@@ -41,6 +41,10 @@ AGENDADOR_MINUTO=0
 EXECUTAR_AO_INICIAR=true
 POSTGRES_CICLO_DIAS=15
 POSTGRES_LIMITE=1000
+POSTGRES_ADMISSAO_ATIVA=true
+POSTGRES_ADMISSAO_LIMITE=25
+POSTGRES_ADMISSAO_REINTERVALO_HORAS=24
+POSTGRES_ADMISSAO_MAX_TENTATIVAS=5
 GOOGLE_SHEET_ID=10YNu_c-TGiSpb2QwfWDdQgQYuvXYXqwreCmxRETamFs
 GOOGLE_SHEET_NAME=Andamentos
 SINCRONIZACAO_ATIVA=true
@@ -56,8 +60,14 @@ KOMMO_STATUS_FASE_3=100204696
 KOMMO_STATUS_FASE_4=100204712
 KOMMO_STATUS_EXIGENCIA=76490168
 KOMMO_STATUS_RISCO_INDEFERIMENTO=105756056
-KOMMO_INTEGRACAO_HABILITADA=false
-KOMMO_SINCRONIZACAO_ATIVA=false
+KOMMO_INTEGRACAO_HABILITADA=true
+KOMMO_NOTA_HABILITADA=false
+KOMMO_CAMPOS_HABILITADO=true
+KOMMO_CAMPOS_ATIVO=true
+KOMMO_CAMPOS_INTERVALO_MINUTOS=30
+KOMMO_CAMPOS_LIMITE_POR_EXECUCAO=100
+KOMMO_CAMPOS_SINCRONIZAR_AO_INICIAR=false
+KOMMO_SINCRONIZACAO_ATIVA=true
 KOMMO_INTERVALO_MINUTOS=15
 KOMMO_REQUISICOES_POR_SEGUNDO=4
 KOMMO_SALESBOT_LEMBRETE_DIAS=30
@@ -75,12 +85,87 @@ KOMMO_SALESBOT_FUSO=America/Sao_Paulo
 KOMMO_SINCRONIZAR_AO_INICIAR=false
 ```
 
-## Integração com o Kommo desativada
+## Consulta de admissão
 
-`KOMMO_INTEGRACAO_HABILITADA=false` é a trava mestre e desliga movimentação de
-etapa, nota e Salesbot. Ela tem precedência sobre `KOMMO_SINCRONIZACAO_ATIVA`:
-mesmo que essa variável esteja em `true`, o agendador não inicia o ciclo do
-Kommo e registra no log:
+O ciclo completo continua governado por `POSTGRES_CICLO_DIAS=15`. A verificação
+diária das 08:00 faz, nos dias em que o ciclo ainda não venceu, uma passagem
+curta que atende somente cadastros novos sem nenhum resultado.
+
+Isso evita que um cliente incluído logo após o início de um ciclo espere até 15
+dias pela primeira consulta. A admissão nunca remarca o vencimento do ciclo
+global: a coluna `tipo` separa `completo` de `admissao` e só o primeiro conta.
+
+Aplique a migração antes de publicar esta versão:
+
+```bash
+npm run db:migrate:admissao
+```
+
+Log esperado nos dias sem ciclo vencido:
+
+```text
+[admissao] Ciclo completo ainda nao vencido (previsto para ...). N cadastro(s)
+novo(s) sem resultado selecionado(s), limite 25.
+```
+
+## Campos personalizados no Kommo
+
+`KOMMO_CAMPOS_HABILITADO` é uma trava separada que libera **somente** a escrita
+de campos personalizados do lead. Movimentação de etapa, nota e Salesbot
+continuam desligados por `KOMMO_INTEGRACAO_HABILITADA=false`.
+
+Aplique a migração antes de publicar:
+
+```bash
+npm run db:migrate:campos-kommo
+```
+
+Confira sem gravar nada e, depois, aplique:
+
+```bash
+npm run campos:diagnostico
+npm run campos:aplicar
+```
+
+Log esperado:
+
+```text
+[campos-kommo] Intervalo configurado: 30 minuto(s).
+[campos-kommo] #779 NOME: lead 77032509 atualizado (9 campos).
+```
+
+O relatório `RELATORIO_AUDITORIA_CAMPOS_KOMMO` traz o mapeamento em uso, o
+resumo e o detalhe por cadastro.
+
+## Integração com o Kommo reativada
+
+`KOMMO_INTEGRACAO_HABILITADA=true` reabre movimentação de etapa e Salesbots.
+`KOMMO_NOTA_HABILITADA=false` mantém a nota desligada, porque os dados vão para
+os campos personalizados do lead.
+
+Com `KOMMO_SINCRONIZACAO_ATIVA=true` e `KOMMO_SINCRONIZAR_AO_INICIAR=true`, a
+sincronização começa **imediatamente na subida do contêiner**.
+
+Ritmo esperado, medido no diagnóstico:
+
+- movimentação: 30 cadastros por ciclo de 15 minutos;
+- Salesbots: cadenciados por `KOMMO_SALESBOT_INTERVALO_MS` (30s entre
+  mensagens), `KOMMO_SALESBOT_LIMITE_POR_EXECUCAO` (5 por ciclo) e
+  `KOMMO_SALESBOT_LIMITE_DIARIO` (120 por dia), apenas de segunda a sexta,
+  das 09:00 às 18:00 (`America/Sao_Paulo`).
+- O que exceder o teto do dia fica agendado para as 09:00 do próximo dia útil.
+
+Rode o diagnóstico antes de publicar para ver o volume real:
+
+```bash
+npm run kommo:diagnostico
+```
+
+Se precisar desligar de novo, volte a trava para `false` e rode
+`npm run db:migrate:desativar-kommo` para cancelar a fila de Salesbots.
+
+A trava tem precedência sobre `KOMMO_SINCRONIZACAO_ATIVA`. Quando está em
+`false`, o agendador não inicia o ciclo e registra:
 
 ```text
 [kommo] Integracao desativada. Ignorado: ciclo automatico do Kommo.

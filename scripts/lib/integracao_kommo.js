@@ -14,6 +14,14 @@ export function integracaoKommoHabilitada() {
   return String(process.env[VARIAVEL] ?? "false").trim().toLowerCase() === "true";
 }
 
+// A nota de status foi substituida pelos campos personalizados do lead
+// (KOMMO_CAMPOS_HABILITADO). Ela fica desligada por padrao para nao duplicar a
+// mesma informacao em dois lugares. Defina KOMMO_NOTA_HABILITADA=true para
+// voltar a criar e atualizar a nota junto da movimentacao.
+export function notaKommoHabilitada() {
+  return String(process.env.KOMMO_NOTA_HABILITADA ?? "false").trim().toLowerCase() === "true";
+}
+
 export function avisoIntegracaoKommoDesativada(origem) {
   return `[kommo] Integracao desativada. Ignorado: ${origem}. `
     + "O sistema apenas consulta o portal e atualiza o PostgreSQL. "

@@ -8,13 +8,18 @@ Ele mantém quatro integrações principais:
 1. Google Sheets como origem operacional dos clientes.
 2. PostgreSQL como base central e histórico.
 3. Portal da Justiça portuguesa como fonte do andamento dos processos.
-4. Kommo como CRM de acompanhamento — **atualmente desativado**.
+4. Kommo como CRM de acompanhamento — **reativado**.
 
-> **Estado atual: integração com o Kommo desligada.**
-> A trava `KOMMO_INTEGRACAO_HABILITADA` está em `false` e impede movimentação
-> de etapa, criação ou atualização de nota e qualquer disparo de Salesbot. O
-> sistema opera apenas como planilha → consulta → PostgreSQL. As seções 2.4 e
-> 2.5 descrevem o comportamento que volta a valer se a trava for reativada.
+> **Estado atual: integração com o Kommo ligada.**
+> `KOMMO_INTEGRACAO_HABILITADA=true` reativa movimentação de etapa e Salesbots,
+> descritos nas seções 2.4 e 2.5. A nota de status permanece desligada por
+> `KOMMO_NOTA_HABILITADA=false`, porque os mesmos dados vão para os campos
+> personalizados do lead (seção 2.3.1).
+>
+> Os lembretes de 30 dias contam a partir de `etapa_entrou_em`, que fica
+> congelado enquanto a integração está desligada. Depois de um período parado,
+> rode `npm run kommo:diagnostico` antes de aplicar para ver quantos lembretes
+> estão vencidos e acumulados.
 
 Fluxo principal em operação:
 
@@ -25,21 +30,27 @@ Sincronização da planilha
     ↓
 PostgreSQL
     ↓
-Consulta ao portal português
+Consulta ao portal português  (ciclo completo a cada 15 dias + admissão diária)
     ↓
 PostgreSQL atualizado
+    ↓
+Campos personalizados do lead no Kommo
 ```
 
-Etapas desativadas pela trava:
+A última etapa tem trava própria, `KOMMO_CAMPOS_HABILITADO`, e escreve apenas
+campos personalizados. Ela não move etapa, não cria nota e não dispara
+Salesbot.
+
+Etapas governadas pela trava mestre:
 
 ```text
 PostgreSQL atualizado
     ↓
-[desativado] Sincronização com o Kommo
+Sincronização com o Kommo
     ↓
-[desativado] Movimentação + nota
+Movimentação de etapa  (nota desligada por KOMMO_NOTA_HABILITADA=false)
     ↓
-[desativado] Salesbot imediato ou agendado
+Salesbot imediato ou agendado
 ```
 
 O processo que mantém tudo em execução no EasyPanel é
@@ -67,7 +78,12 @@ Rotinas controladas:
 |---|---:|---|
 | Planilha → banco | A cada 10 minutos | `SINCRONIZAR_AO_INICIAR` |
 | Consulta no portal | Diariamente às 08:00 | `EXECUTAR_AO_INICIAR` |
-| Banco → Kommo | A cada 15 minutos | `KOMMO_SINCRONIZAR_AO_INICIAR` |
+| Banco → Kommo (desativado) | A cada 15 minutos | `KOMMO_SINCRONIZAR_AO_INICIAR` |
+| Campos personalizados → Kommo | A cada 30 minutos | `KOMMO_CAMPOS_SINCRONIZAR_AO_INICIAR` |
+
+A rotina de campos também é disparada logo após cada execução do worker de
+consulta, para que um resultado recém-gravado chegue ao CRM sem esperar o
+intervalo de 30 minutos.
 
 As três rotinas são independentes. No início do contêiner elas podem executar
 quase simultaneamente. Uma atualização que ainda não estiver disponível será
@@ -165,6 +181,24 @@ Finalização:
 - Estados manuais como `Terminado`, `Concluído` e `Encerrado` também podem
   marcar o processo como finalizado durante a sincronização da planilha.
 
+Consulta de admissão:
+
+- Um cadastro novo é detectado pela sincronização da planilha em até 10 minutos.
+- Ser elegível, porém, não bastava: até esta versão ele aguardava o próximo
+  ciclo global, o que podia levar até 15 dias.
+- A verificação diária das 08:00 agora faz uma passagem curta quando o ciclo
+  completo ainda não venceu, atendendo somente quem nunca produziu uma fase.
+- O limite é próprio (`POSTGRES_ADMISSAO_LIMITE`, padrão 25) e não se confunde
+  com o limite do ciclo completo.
+- Uma falha é repetida a cada `POSTGRES_ADMISSAO_REINTERVALO_HORAS` até o teto
+  de `POSTGRES_ADMISSAO_MAX_TENTATIVAS`; depois o cadastro aguarda o próximo
+  ciclo completo. Isso impede que um código inválido seja consultado sem fim.
+- A admissão **nunca** remarca o vencimento do ciclo global. A coluna `tipo` em
+  `ciclos_consulta_nacionalidade` separa `completo` de `admissao`, e a consulta
+  do último ciclo filtra por `tipo = 'completo'`.
+- Sem essa separação, cada admissão concluída reiniciaria a contagem de 15 dias
+  e o ciclo completo nunca mais venceria.
+
 Controle de ciclo:
 
 - O intervalo é global, e não individual por cliente.
@@ -191,6 +225,82 @@ Auditoria nos logs:
   fase, finalizações e o resultado individual de cada cliente.
 - O relatório é enviado ao stdout e fica disponível nos logs do EasyPanel.
 
+### 2.3.1. Campos personalizados no Kommo
+
+Arquivos:
+
+- `scripts/sincronizar_campos_kommo.js`;
+- `scripts/lib/campos_kommo.js`;
+- Persistência: `public.campos_kommo_nacionalidade`.
+
+Responsabilidade:
+
+- Selecionar cadastros ativos, principais e com fase automática conhecida.
+- Localizar o lead por `sincronizacao_crm_nacionalidade.crm_lead_id` ou, na
+  ausência dele, por `agente_kommo_nacionalidade_estado.crm_lead_id`.
+- Enviar `PATCH /api/v4/leads/{id}` contendo **apenas** `custom_fields_values`.
+- Gravar um hash do conteúdo para não repetir escritas idênticas.
+- Registrar sucesso, erro ou ausência de lead por cadastro.
+
+Trava:
+
+- A variável é `KOMMO_CAMPOS_HABILITADO`, independente da trava mestre.
+- Ela libera somente a escrita de campos personalizados.
+- Movimentação de etapa, nota e Salesbot continuam governados exclusivamente
+  por `KOMMO_INTEGRACAO_HABILITADA`, que permanece `false`.
+- `validarCorpoSomenteCampos()` recusa qualquer corpo que contenha
+  `status_id`, `pipeline_id`, `responsible_user_id`, `name` ou `_embedded`.
+  Uma regressão futura falha nessa validação em vez de mover um lead.
+
+Mapeamento:
+
+| Campo no Kommo | ID | Tipo | Origem |
+|---|---:|---|---|
+| Fase Processual | 2990113 | text | `fase_consulta_automatica` |
+| Posição da Fase | 2990115 | numeric | `posicao_fase` |
+| Total de Fases | 2990117 | numeric | `total_fases` |
+| Data da Fase | 2990119 | date | `data_fase` |
+| Ultima Consulta CRC | 2990121 | date_time | `data_ultima_consulta` |
+| Possui Notificação | 2990123 | select | `possui_notificacao` |
+| Resumo de Notificações | 2990125 | textarea | `titulos_notificacoes` |
+| Origem da Sincronização | 2990127 | text | `vne:nacionalidade:<id>` |
+| Código CRC | 2990129 | text | `codigo_consulta` |
+| N do Processo | 2990131 | text | `numero_processo` |
+
+Cada ID aceita substituição por variável de ambiente
+(`KOMMO_CAMPO_FASE_PROCESSUAL`, `KOMMO_CAMPO_POSICAO_FASE` e assim por diante).
+O select `Possui Notificação` usa os enums `9258323` (SIM) e `9258325` (NÃO),
+configuráveis por `KOMMO_ENUM_NOTIFICACAO_SIM` e `KOMMO_ENUM_NOTIFICACAO_NAO`.
+
+Regras de escrita:
+
+- Um campo sem valor conhecido não é enviado, para nunca apagar um dado
+  preenchido manualmente no CRM.
+- A única exceção é `Resumo de Notificações`, limpo quando a consulta afirma
+  explicitamente que não há notificação.
+- O módulo nunca cria leads. Sem `crm_lead_id` conhecido, o cadastro é apenas
+  reportado como `sem_lead`.
+- Uma trava `pg_try_advisory_lock` impede duas execuções simultâneas.
+- `KOMMO_REQUISICOES_POR_SEGUNDO` limita a taxa; `429` respeita `Retry-After`.
+
+Modos:
+
+```bash
+npm run campos:diagnostico
+npm run campos:aplicar
+```
+
+Ao final, o módulo imprime `RELATORIO_AUDITORIA_CAMPOS_KOMMO`, com o
+mapeamento em uso, o resumo e o detalhe por cadastro.
+
+Histórico:
+
+- Os campos foram criados no Kommo e preenchidos até maio/junho por workflows
+  n8n (`Verificador CRC PT`, `Conservatória PT Monitor v1`, `Concierge
+  Operacional`), hoje todos parados.
+- Este módulo assume a responsabilidade e mantém a convenção
+  `vne:nacionalidade:<id>` já usada por eles em `Origem da Sincronização`.
+
 ### 2.4. Sincronização com o Kommo
 
 Arquivo: `scripts/sincronizar_kommo.js`
@@ -204,7 +314,9 @@ Responsabilidade:
 - Criar um lead sem telefone quando nenhum lead for encontrado.
 - Comparar a etapa atual do lead com a etapa calculada para o processo.
 - Movimentar o lead somente quando as etapas forem diferentes.
-- Criar uma nota de andamento ou atualizar a nota já controlada pelo sistema.
+- Criar uma nota de andamento ou atualizar a nota já controlada pelo sistema,
+  somente quando `KOMMO_NOTA_HABILITADA=true`. Desligada, a nota não é escrita
+  e o ID e o hash já gravados são preservados.
 - Gravar no banco os IDs do lead e da nota.
 - Marcar `ESTÁ NO KOMMO?` como `SIM` no banco e, quando necessário, na planilha.
 - Registrar sucesso ou erro de cada tentativa.
@@ -344,6 +456,29 @@ Regras de lembrete:
 - Fases 1, 2 e 3 têm lembrete configurado.
 - Fase 4 não tem lembrete.
 - Exigência só tem lembrete quando o ID opcional estiver configurado.
+
+Cadência de comunicação:
+
+- `KOMMO_REQUISICOES_POR_SEGUNDO` é o limite técnico da API e **não** serve como
+  cadência: com ele sozinho, 100 mensagens saem em cerca de 25 segundos.
+- `KOMMO_SALESBOT_INTERVALO_MS` define o espaçamento mínimo entre duas
+  mensagens. Com `30000`, sai no máximo uma a cada 30 segundos.
+- `KOMMO_SALESBOT_LIMITE_POR_EXECUCAO` define o tamanho do lote por ciclo.
+- `KOMMO_SALESBOT_LIMITE_DIARIO` é o teto do dia, somando mudanças de fase e
+  lembretes. Zero desliga o teto.
+- Ao atingir o teto, a mensagem **não se perde**: recebe `status_disparo`
+  `agendado` e `disparar_apos` nas 09:00 do próximo dia útil, pelo mesmo
+  caminho de quem cai fora da janela.
+- As mudanças de fase são processadas antes dos lembretes, então consomem a
+  cota primeiro. Um lembrete de 30 dias cede lugar a uma notificação de
+  andamento real.
+- O espaçamento acontece antes da reserva do disparo, para não manter um
+  registro em `processando` durante a espera.
+- Na partida, o módulo registra a cadência em uso:
+
+```text
+[salesbot] Cadencia: 30s entre mensagens, 5 por execucao, 120 por dia.
+```
 
 Janela de comunicação:
 
@@ -572,6 +707,14 @@ Variáveis operacionais mais importantes:
 | `KOMMO_SALESBOT_FUSO` | Fuso usado para a janela de mensagens |
 | `KOMMO_SALESBOT_EXIGENCIA` | Bot opcional de entrada em Exigência |
 | `KOMMO_SALESBOT_LEMBRETE_EXIGENCIA` | Bot opcional de lembrete de Exigência |
+| `POSTGRES_ADMISSAO_ATIVA=true` | Liga a consulta de admissão entre ciclos |
+| `POSTGRES_ADMISSAO_LIMITE=25` | Cadastros novos por passagem de admissão |
+| `POSTGRES_ADMISSAO_REINTERVALO_HORAS=24` | Espaçamento entre retentativas |
+| `POSTGRES_ADMISSAO_MAX_TENTATIVAS=5` | Teto de falhas antes de aguardar o ciclo |
+| `KOMMO_CAMPOS_HABILITADO` | Trava só dos campos personalizados |
+| `KOMMO_CAMPOS_ATIVO` | Liga a rotina de campos no agendador |
+| `KOMMO_CAMPOS_INTERVALO_MINUTOS=30` | Frequência banco → campos do lead |
+| `KOMMO_CAMPOS_LIMITE_POR_EXECUCAO=100` | Cadastros por lote de campos |
 
 O conteúdo de tokens, senhas e chaves privadas nunca deve aparecer em logs ou
 documentação.
@@ -635,6 +778,17 @@ Remove espaços externos de identificadores antigos. A migração só normaliza
 valores únicos após `btrim()`, evitando violar o índice único caso existam dois
 identificadores legados que se diferenciem apenas por espaços.
 
+### `011_consulta_admissao.sql`
+
+Adiciona a coluna `tipo` em `ciclos_consulta_nacionalidade`, com o CHECK
+`completo` ou `admissao`, e os índices que localizam o último ciclo completo e
+os cadastros elegíveis para admissão. Ciclos anteriores viram `completo`.
+
+### `012_campos_personalizados_kommo.sql`
+
+Cria `public.campos_kommo_nacionalidade`, com lead, hash do conteúdo,
+datas, status e erro da última tentativa de escrita dos campos personalizados.
+
 Ordem de aplicação em um banco novo:
 
 ```bash
@@ -647,6 +801,8 @@ npm run db:migrate:kommo-queue
 npm run db:migrate:salesbots
 npm run db:migrate:salesbot-window
 npm run db:migrate:normalize-ids
+npm run db:migrate:admissao
+npm run db:migrate:campos-kommo
 ```
 
 As migrações usam `IF NOT EXISTS` onde aplicável, mas devem ser executadas na
@@ -680,8 +836,19 @@ Mensagens esperadas:
 
 ```text
 [sincronizacao] Intervalo configurado: 10 minuto(s).
-[kommo] Intervalo configurado: 15 minuto(s).
+[campos-kommo] Intervalo configurado: 30 minuto(s).
 [agendador] Proxima verificacao:
+```
+
+Com a integração mestre desligada, a linha do Kommo é substituída pelo aviso
+de integração desativada. Isso é esperado: apenas a rotina de campos escreve
+no CRM.
+
+Nos dias em que o ciclo completo ainda não venceu, o worker imprime:
+
+```text
+[admissao] Ciclo completo ainda nao vencido (previsto para ...). N cadastro(s)
+novo(s) sem resultado selecionado(s), limite 25.
 ```
 
 ### Configuração recomendada de produção

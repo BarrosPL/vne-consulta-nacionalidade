@@ -24,5 +24,9 @@
   "google_sheet_id": "10YNu_c-TGiSpb2QwfWDdQgQYuvXYXqwreCmxRETamFs",
   "google_sheet_name": "Andamentos",
   "google_credentials_file": "google-service-account.json",
-  "simular": true
+  "simular": true,
+  "admissao_ativa": true,
+  "admissao_limite": 25,
+  "admissao_reintervalo_horas": 24,
+  "admissao_max_tentativas": 5
 }

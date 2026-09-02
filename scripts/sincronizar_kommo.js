@@ -10,7 +10,8 @@ import {
 } from "./lib/janela_salesbot.js";
 import {
   avisoIntegracaoKommoDesativada,
-  integracaoKommoHabilitada
+  integracaoKommoHabilitada,
+  notaKommoHabilitada
 } from "./lib/integracao_kommo.js";
 
 // A trava vem antes de qualquer leitura de configuracao para que o modulo nao
@@ -19,8 +20,15 @@ if (!integracaoKommoHabilitada()) {
   console.warn(avisoIntegracaoKommoDesativada("sincronizacao com o Kommo"));
   process.exit(0);
 }
+if (!notaKommoHabilitada()) {
+  console.log(
+    "[kommo] Nota de status desligada: os dados vao para os campos "
+    + "personalizados do lead. Use KOMMO_NOTA_HABILITADA=true para reativa-la."
+  );
+}
 
 const APPLY = process.argv.includes("--aplicar");
+const NOTE_ENABLED = notaKommoHabilitada();
 const LIMIT = Number(process.env.KOMMO_LIMITE_POR_EXECUCAO ?? 30);
 const TEST_NACIONALIDADE_ID = process.env.KOMMO_TESTE_NACIONALIDADE_ID
   ? Number(process.env.KOMMO_TESTE_NACIONALIDADE_ID)
@@ -32,6 +40,22 @@ const REQUESTS_PER_SECOND = Number(process.env.KOMMO_REQUISICOES_POR_SEGUNDO ?? 
 const SALESBOT_REMINDER_DAYS = Number(process.env.KOMMO_SALESBOT_LEMBRETE_DIAS ?? 30);
 const SALESBOT_LIMIT = Number(process.env.KOMMO_SALESBOT_LIMITE_POR_EXECUCAO ?? 100);
 const SALESBOT_TIMEZONE = process.env.KOMMO_SALESBOT_FUSO ?? "America/Sao_Paulo";
+// Cadencia de comunicacao. Diferente de KOMMO_REQUISICOES_POR_SEGUNDO, que e o
+// limite tecnico da API: estes dois controlam o ritmo com que o cliente final
+// recebe mensagem.
+const SALESBOT_INTERVAL_MS = Number(process.env.KOMMO_SALESBOT_INTERVALO_MS ?? 0);
+const SALESBOT_DAILY_LIMIT = Number(process.env.KOMMO_SALESBOT_LIMITE_DIARIO ?? 0);
+if (!Number.isInteger(SALESBOT_INTERVAL_MS) || SALESBOT_INTERVAL_MS < 0 || SALESBOT_INTERVAL_MS > 3600000) {
+  throw new Error("KOMMO_SALESBOT_INTERVALO_MS deve ser um inteiro entre 0 e 3600000.");
+}
+if (!Number.isInteger(SALESBOT_DAILY_LIMIT) || SALESBOT_DAILY_LIMIT < 0 || SALESBOT_DAILY_LIMIT > 100000) {
+  throw new Error("KOMMO_SALESBOT_LIMITE_DIARIO deve ser um inteiro entre 0 e 100000.");
+}
+console.log(
+  `[salesbot] Cadencia: ${SALESBOT_INTERVAL_MS > 0 ? `${SALESBOT_INTERVAL_MS / 1000}s entre mensagens` : "sem espacamento"}`
+  + `, ${SALESBOT_LIMIT} por execucao`
+  + `, ${SALESBOT_DAILY_LIMIT > 0 ? `${SALESBOT_DAILY_LIMIT} por dia` : "sem limite diario"}.`
+);
 process.env.TZ = SALESBOT_TIMEZONE;
 const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID
   ?? "10YNu_c-TGiSpb2QwfWDdQgQYuvXYXqwreCmxRETamFs";
@@ -87,6 +111,36 @@ const SALESBOTS = new Map([
 ]);
 
 let nextKommoRequestAt = 0;
+// Cadencia: momento do proximo disparo permitido e contagem do dia corrente.
+let nextSalesbotDispatchAt = 0;
+let salesbotSentToday = null;
+let salesbotDailyLimitLogged = false;
+
+// Meia-noite local. process.env.TZ ja foi ajustado para KOMMO_SALESBOT_FUSO.
+function startOfLocalDay() {
+  const inicio = new Date();
+  inicio.setHours(0, 0, 0, 0);
+  return inicio;
+}
+
+async function salesbotDispatchedToday(pool) {
+  if (salesbotSentToday !== null) return salesbotSentToday;
+  const resultado = await pool.query(`
+    SELECT count(*)::int AS total
+      FROM public.disparos_salesbot_nacionalidade
+     WHERE status_disparo = 'sucesso'
+       AND disparado_em >= $1
+  `, [startOfLocalDay()]);
+  salesbotSentToday = resultado.rows[0]?.total ?? 0;
+  return salesbotSentToday;
+}
+
+async function waitForSalesbotCadence() {
+  if (SALESBOT_INTERVAL_MS <= 0) return;
+  const espera = Math.max(0, nextSalesbotDispatchAt - Date.now());
+  if (espera > 0) await new Promise((resolve) => setTimeout(resolve, espera));
+  nextSalesbotDispatchAt = Math.max(Date.now(), nextSalesbotDispatchAt) + SALESBOT_INTERVAL_MS;
+}
 
 function text(value) {
   return String(value ?? "").trim();
@@ -449,6 +503,25 @@ async function executeSalesbotDispatch(pool, dispatch) {
   if (!isSalesbotBusinessHours()) {
     return scheduleSalesbotDispatch(pool, dispatch);
   }
+  // Cota diaria esgotada: a mensagem nao se perde, e adiada para as 09:00 do
+  // proximo dia util, pelo mesmo caminho de quem cai fora da janela.
+  if (SALESBOT_DAILY_LIMIT > 0) {
+    const enviadosHoje = await salesbotDispatchedToday(pool);
+    if (enviadosHoje >= SALESBOT_DAILY_LIMIT) {
+      if (!salesbotDailyLimitLogged) {
+        console.warn(
+          `[salesbot] Cota diaria de ${SALESBOT_DAILY_LIMIT} mensagem(ns) atingida `
+          + `(${enviadosHoje} enviadas hoje). Os disparos restantes ficam agendados `
+          + "para as 09:00 do proximo dia util."
+        );
+        salesbotDailyLimitLogged = true;
+      }
+      return scheduleSalesbotDispatch(pool, dispatch);
+    }
+  }
+  // Espaca as mensagens antes de reservar, para nao manter um disparo em
+  // 'processando' enquanto aguarda.
+  await waitForSalesbotCadence();
   const dispatchId = await reserveSalesbotDispatch(pool, dispatch);
   if (!dispatchId) return { sent: false, duplicate: true };
   try {
@@ -464,6 +537,7 @@ async function executeSalesbotDispatch(pool, dispatch) {
          SET salesbot_ultimo_disparo_em=now(), atualizado_em=now()
        WHERE nacionalidade_id=$1
     `, [dispatch.nacionalidadeId]);
+    if (salesbotSentToday !== null) salesbotSentToday++;
     return { sent: true, duplicate: false, httpStatus };
   } catch (error) {
     await pool.query(`
@@ -992,12 +1066,19 @@ try {
       } else {
         audit.acao = "criado";
       }
-      const content = noteContent(record, target);
-      const noteHash = createHash("sha256").update(content).digest("hex");
+      // Com a nota desligada, o ID e o hash ja gravados sao preservados como
+      // estao: nada e escrito no Kommo e nada e sobrescrito no banco.
       let noteId = record.crm_nota_status_id;
-      const noteUpdated = !noteId || noteHash !== record.conteudo_nota_hash;
-      if (noteUpdated) {
-        noteId = await upsertNote(record, lead.id, noteId, content);
+      let noteHash = record.conteudo_nota_hash;
+      let noteUpdated = false;
+      if (NOTE_ENABLED) {
+        const content = noteContent(record, target);
+        const computedHash = createHash("sha256").update(content).digest("hex");
+        noteUpdated = !noteId || computedHash !== record.conteudo_nota_hash;
+        if (noteUpdated) {
+          noteId = await upsertNote(record, lead.id, noteId, content);
+          noteHash = computedHash;
+        }
       }
       await saveSuccess(pool, record, {
         leadId: lead.id, noteId, noteHash, target, created, stageEnteredAt
