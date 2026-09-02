@@ -168,6 +168,23 @@ E não é uma duplicata
 E o processo ainda não foi finalizado
 ```
 
+Leitura da fase no portal:
+
+- O wizard usa `past` nas etapas já vencidas, `active` na etapa em curso e
+  `next` nas pendentes.
+- Um pedido em análise, porém, chega sem nenhuma etapa `active`: só `Submetido`
+  aparece como `past`. Ler a última etapa `past` como fase atual congelava esses
+  processos em `Submetido`, e a posição 2 nunca era alcançada.
+- Quando o portal marca a etapa em curso, ela vale. Sem essa marcação, a fase
+  corrente é a primeira etapa ainda pendente depois da última vencida. Só quando
+  não resta nenhuma pendente o processo está na última etapa.
+- No fluxo de 5 etapas, com exigência, o portal chega a marcar duas etapas como
+  `active` ao mesmo tempo. Vale a primeira, que é a fase real do processo.
+- A etapa pendente não traz data própria; ela herda a data da etapa vencida
+  anterior, que é quando o processo entrou na fase atual.
+- `selectCurrentPhase` isola essa regra e é coberta por
+  `scripts/testar_fases_wizard.js`.
+
 Finalização:
 
 - Um processo é finalizado quando a posição retornada corresponde ao total de
@@ -1097,6 +1114,7 @@ Domínio e persistência:
 | `isRetryableConsultationError` | Define quais falhas abrem uma página nova, incluindo captcha |
 | `classifyError` | Classifica falhas para histórico e retentativa |
 | `openPostgresStorage` | Seleciona elegíveis, controla ciclos e persiste resultados |
+| `selectCurrentPhase` | Escolhe a fase corrente entre as etapas do wizard |
 | `extractProcessData` | Extrai fase, data, posição e notificações da página |
 | `main` | Inicializa navegador, percorre registros e emite a auditoria |
 
@@ -1194,6 +1212,7 @@ domínio reutilizáveis:
 | Arquivo | Responsabilidade |
 |---|---|
 | `scripts/aplicar_migracao.js` | Executar um arquivo SQL |
+| `scripts/diagnosticar_fases.js` | Imprimir como o portal marca cada etapa de um código |
 | `scripts/diagnosticar_movimentacao_kommo.js` | Comparar banco e lead |
 | `scripts/diagnosticar_partida.js` | Resumir o estado antes da partida |
 | `scripts/executar_teste_real.js` | Executar uma consulta real isolada |
@@ -1209,6 +1228,7 @@ Outros auxiliares com função local:
 | `scripts/testar_salesbot.js` / `request` | Fazer chamadas controladas à Kommo |
 | `scripts/testar_janela_salesbot.js` / `localDate` | Criar datas dos testes de fronteira |
 | `scripts/testar_processo_inativo.js` | Validar a detecção de processo encerrado sem fases |
+| `scripts/testar_fases_wizard.js` | Validar a leitura da fase corrente no wizard |
 
 ## 10. Mapa das tabelas persistentes
 

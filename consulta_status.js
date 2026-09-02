@@ -339,7 +339,7 @@ async function solveHCaptcha(page, config) {
 
 // ─── handleCaptcha ────────────────────────────────────────────────────────────
 
-async function handleCaptcha(page, config, rl) {
+export async function handleCaptcha(page, config, rl) {
   if (!config.use_capsolver && !config.use_2captcha) {
     await waitForManualCaptcha(page, rl);
     return;
@@ -411,7 +411,7 @@ const DEFAULT_CONFIG = {
 
 // ─── Utilitários ──────────────────────────────────────────────────────────────
 
-function loadConfig() {
+export function loadConfig() {
   const configPath = path.resolve("config.json");
   const config = fs.existsSync(configPath)
     ? { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(configPath, "utf8")) }
@@ -1166,7 +1166,7 @@ async function firstVisible(page, selectors, timeout = 15000) {
   }
 }
 
-async function fillCode(page, codigo) {
+export async function fillCode(page, codigo) {
   const field = await firstVisible(page, [
     "input[name*='codigo' i]",
     "input[id*='codigo' i]",
@@ -1184,7 +1184,7 @@ async function fillCode(page, codigo) {
   await field.fill(codigo);
 }
 
-async function clickConsultar(page) {
+export async function clickConsultar(page) {
   const button = await firstVisible(page, [
     "button:has-text('Consultar')",
     "input[type='submit'][value*='Consultar' i]",
@@ -1205,6 +1205,36 @@ async function waitForManualCaptcha(page, rl) {
 }
 
 // ─── Extração do status via wizard ───────────────────────────────────────────
+
+// O wizard do portal usa "past" para as etapas ja vencidas, "active" para a
+// etapa em curso e "next" para as pendentes. Um pedido em analise, porem,
+// chega sem nenhuma etapa "active": apenas "Submetido" aparece como "past".
+// Ler a ultima etapa "past" como fase atual congelava esses processos em
+// "Submetido" — um pedido submetido em 14-04-2025 continuava reportado na
+// fase 1, e a posicao 2 nunca era alcancada. Quando o portal marca a etapa em
+// curso ela vale; sem essa marcacao, a fase corrente e a primeira etapa ainda
+// pendente depois da ultima vencida.
+export function selectCurrentPhase(steps) {
+  const usable = (steps ?? []).filter((step) => step.label);
+  if (!usable.length) return null;
+
+  // Quando o portal marca a etapa em curso, ela e a resposta.
+  const explicit = usable.find((step) => step.current);
+  if (explicit) return explicit;
+
+  let lastPastIndex = -1;
+  usable.forEach((step, index) => { if (step.past) lastPastIndex = index; });
+
+  const pending = usable[lastPastIndex + 1];
+  if (!pending) return usable[usable.length - 1];
+
+  // A etapa pendente nao traz data propria: o processo entrou nela quando a
+  // etapa anterior foi vencida.
+  return {
+    ...pending,
+    date: pending.date || usable[lastPastIndex]?.date || ""
+  };
+}
 
 export async function extractProcessData(page) {
   try {
@@ -1242,29 +1272,13 @@ export async function extractProcessData(page) {
     };
   }
 
-  const result = await page.evaluate(() => {
-    const items = document.querySelectorAll(".wizard-wrapper-item");
+  const raw = await page.evaluate(() => {
+    const items = [...document.querySelectorAll(".wizard-wrapper-item")];
     if (!items.length) return null;
 
-    // Prioridade: current > último past > primeiro next
-    let currentStep = null;
-    let lastPast    = null;
-    let firstNext   = null;
-
-    let position = 0;
-    for (const item of items) {
-      position++;
-      const isPast    = item.classList.contains("past");
-      const isNext    = item.classList.contains("next");
-      const isCurrent =
-        item.classList.contains("active") ||
-        item.classList.contains("current") ||
-        item.getAttribute("aria-current") === "step" ||
-        Boolean(item.querySelector("[aria-current='step']"));
-
+    const steps = items.map((item, index) => {
       const labelEl = item.querySelector(".bold");
-      const label   = labelEl?.innerText?.trim().replace(/\s+/g, " ") ?? "";
-      if (!label) continue;
+      const label = labelEl?.innerText?.trim().replace(/\s+/g, " ") ?? "";
 
       let date = "";
       item.querySelectorAll(".wizard-item-label [data-expression]").forEach((span) => {
@@ -1272,15 +1286,18 @@ export async function extractProcessData(page) {
         if (txt && /\d{2}-\d{2}-\d{4}/.test(txt)) date = txt;
       });
 
-      const step = { label, date, position };
-
-      if (isCurrent) { currentStep = step; break; }
-      if (isPast)    { lastPast    = step; }
-      if (isNext && !firstNext) { firstNext = step; }
-    }
-
-    const step = currentStep ?? lastPast ?? firstNext ?? null;
-    if (!step) return null;
+      return {
+        position: index + 1,
+        label,
+        date,
+        past: item.classList.contains("past"),
+        current:
+          item.classList.contains("active") ||
+          item.classList.contains("current") ||
+          item.getAttribute("aria-current") === "step" ||
+          Boolean(item.querySelector("[aria-current='step']"))
+      };
+    });
 
     const notificationsContainer =
       document.querySelector("[id$='-Notificacoes']") ??
@@ -1292,15 +1309,18 @@ export async function extractProcessData(page) {
         .filter(Boolean)
     )];
 
-    return {
-      status: step.label,
-      position: step.position,
-      totalPhases: items.length,
-      phaseDate: step.date,
-      hasNotification: notificationTitles.length > 0 ? "SIM" : "NÃO",
-      notificationTitles: notificationTitles.join(" | ")
-    };
+    return { steps, totalPhases: items.length, notificationTitles };
   });
+
+  const step = raw ? selectCurrentPhase(raw.steps) : null;
+  const result = step ? {
+    status: step.label,
+    position: step.position,
+    totalPhases: raw.totalPhases,
+    phaseDate: step.date,
+    hasNotification: raw.notificationTitles.length > 0 ? "SIM" : "NÃO",
+    notificationTitles: raw.notificationTitles.join(" | ")
+  } : null;
 
   if (result) {
     const positionText = `${result.position} de ${result.totalPhases}`;

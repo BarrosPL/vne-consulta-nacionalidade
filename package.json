@@ -30,6 +30,8 @@
     "teste:fluxo:10": "node scripts/testar_fluxo_completo.js",
     "teste:janela-salesbot": "node scripts/testar_janela_salesbot.js",
     "teste:processo-inativo": "node scripts/testar_processo_inativo.js",
+    "teste:fases-wizard": "node scripts/testar_fases_wizard.js",
+    "diagnostico:fases": "node scripts/diagnosticar_fases.js",
     "test:real": "node scripts/executar_teste_real.js"
   },
   "dependencies": {
